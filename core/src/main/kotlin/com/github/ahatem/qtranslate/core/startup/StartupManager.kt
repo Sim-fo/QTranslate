@@ -18,6 +18,21 @@ class StartupManager(private val logger: Logger) {
     companion object {
         private const val APP_NAME = "QTranslate"
         private const val REG_KEY = "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run"
+
+        /**
+         * Builds the registry command string for a given JAR path.
+         * Visible for testing.
+         */
+        fun buildCommand(jarPath: File): String {
+            val javaHome = System.getProperty("java.home") ?: ""
+            val javaw = File(javaHome, "bin/javaw.exe").let {
+                if (it.exists()) it.absolutePath else "javaw"
+            }
+            return "$javaw -jar \"${jarPath.absolutePath}\""
+        }
+
+        fun isWindows(): Boolean =
+            System.getProperty("os.name").orEmpty().lowercase().contains("win")
     }
 
     /**
@@ -62,14 +77,6 @@ class StartupManager(private val logger: Logger) {
         }
     }
 
-    private fun buildCommand(jarPath: File): String {
-        val javaHome = System.getProperty("java.home") ?: ""
-        val javaw = File(javaHome, "bin/javaw.exe").let {
-            if (it.exists()) it.absolutePath else "javaw"
-        }
-        return "$javaw -jar \"${jarPath.absolutePath}\""
-    }
-
     private fun runRegCommand(vararg args: String): String {
         val command = listOf("reg") + args
         val process = ProcessBuilder(command)
@@ -85,7 +92,4 @@ class StartupManager(private val logger: Logger) {
 
         return output
     }
-
-    private fun isWindows(): Boolean =
-        System.getProperty("os.name").orEmpty().lowercase().contains("win")
 }

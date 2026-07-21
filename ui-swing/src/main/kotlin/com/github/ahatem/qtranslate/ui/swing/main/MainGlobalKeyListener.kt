@@ -232,8 +232,9 @@ class MainGlobalKeyListener(
             val debounce = binding.doubleCtrlDebounceMs
             val now = System.currentTimeMillis()
             // Suppress duplicate triggers from keyboard bounce or rapid re-presses.
+            // Do NOT update lastCtrlTime — after cooldown expires, the next release
+            // must be a fresh first tap, not a false second tap.
             if (now - lastTriggerTime < cooldown) {
-                lastCtrlTime = now
                 return
             }
             // Keyboard chatter: two releases from one physical press are < debounce apart.
