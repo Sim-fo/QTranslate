@@ -25,6 +25,7 @@ import com.github.ahatem.qtranslate.core.shared.AppConstants
 import com.github.ahatem.qtranslate.core.shared.events.AppEventBus
 import com.github.ahatem.qtranslate.core.shared.logging.LoggerFactory
 import com.github.ahatem.qtranslate.core.shared.notification.NotificationBus
+import com.github.ahatem.qtranslate.core.startup.StartupManager
 import com.github.ahatem.qtranslate.core.updater.Updater
 import com.github.ahatem.qtranslate.ui.swing.shared.icon.IconManager
 import com.github.ahatem.qtranslate.ui.swing.shared.theme.ThemeManager
@@ -58,7 +59,8 @@ class AppDependencies(
     val iconManager: IconManager,
     val themeManager: ThemeManager,
     val localizationManager: LocalizationManager,
-    val notificationBus: NotificationBus
+    val notificationBus: NotificationBus,
+    val startupManager: StartupManager
 )
 
 /**
@@ -111,6 +113,8 @@ suspend fun buildDependencies(
 
     val notificationBus = NotificationBus()
     val appEventBus     = AppEventBus()
+
+    val startupManager = StartupManager(loggerFactory.getLogger("StartupManager"))
 
     val pluginManager = PluginManager(
         appDataDirectory            = appData,
@@ -251,6 +255,7 @@ suspend fun buildDependencies(
         iconManager         = iconManager,
         themeManager        = themeManager,
         localizationManager = localizationManager,
-        notificationBus     = notificationBus
+        notificationBus     = notificationBus,
+        startupManager      = startupManager
     )
 }

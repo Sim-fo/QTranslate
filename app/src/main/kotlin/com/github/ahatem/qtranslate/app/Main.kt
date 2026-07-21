@@ -4,10 +4,15 @@ import com.github.ahatem.qtranslate.api.language.LanguageCode
 import com.github.ahatem.qtranslate.core.settings.data.Configuration
 import com.github.ahatem.qtranslate.core.settings.data.SettingsRepository
 import com.github.ahatem.qtranslate.core.shared.AppConstants
+import com.github.ahatem.qtranslate.core.shared.events.AppEvent
 import com.github.ahatem.qtranslate.ui.swing.main.MainAppFrame
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
+import java.io.File
 import javax.swing.SwingUtilities
 
 fun main() = runBlocking {
@@ -60,6 +65,27 @@ fun main() = runBlocking {
     )
     AppUiSetup.apply(initialConfig, deps.themeManager)
 
+    // ---- Startup registration ----
+    val jarPath = resolveJarPath()
+    if (jarPath != null) {
+        deps.startupManager.setEnabled(initialConfig.launchOnSystemStartup, jarPath)
+        logger.info("Startup registration synced: enabled=${initialConfig.launchOnSystemStartup}")
+
+        // Keep registry in sync when settings are saved.
+        deps.appScope.launch {
+            deps.settingsStore.state.collect { state ->
+                if (!state.isSaving) {
+                    withContext(Dispatchers.IO) {
+                        deps.startupManager.setEnabled(
+                            state.workingConfiguration.launchOnSystemStartup,
+                            jarPath
+                        )
+                    }
+                }
+            }
+        }
+    }
+
     logger.info("Loading plugins...")
     runCatching { deps.pluginManager.loadAndProcessPlugins() }
         .onSuccess { logger.info("Plugins loaded successfully") }
@@ -92,3 +118,16 @@ fun main() = runBlocking {
 
     Thread.currentThread().join()
 }
+
+/**
+ * Resolves the path to the running QTranslate JAR file.
+ * Returns null if running from IDE or test runner (no JAR).
+ */
+private fun resolveJarPath(): File? = runCatching {
+    val uri = AppDataDirectory::class.java
+        .protectionDomain
+        .codeSource
+        .location
+        .toURI()
+    File(uri).takeIf { it.extension == "jar" }
+}.getOrNull()
