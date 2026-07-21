@@ -9,6 +9,14 @@ Versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- Double-Ctrl trigger now filters keyboard chatter (configurable debounce, default 80ms) — mechanical keyboards that send duplicate key events no longer cause false triggers
+- Clipboard race condition: translating text A then text B no longer reverts to text A after ~500ms (cooldown prevents rapid re-triggers)
+
+### Added
+- Configurable double-Ctrl sensitivity: Chatter filter and Cooldown spinners in Settings → Keyboard & Hotkeys (visible when "Show Main Window" row is selected)
+- Windows autostart via registry (`HKCU\...\Run`) — the "Launch on startup" checkbox now actually registers the app in Windows autostart
+
 ---
 
 ## [1.2.1] — 2026-05-11
