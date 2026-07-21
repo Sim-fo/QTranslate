@@ -1,4 +1,4 @@
-﻿# ===================================================================
+# ===================================================================
 # META SECTION
 # ===================================================================
 [meta]
@@ -298,6 +298,8 @@ show_main_tooltip = "A Dupla Ctrl mindig aktív. Opcionálisan megadhat itt egy 
 double_ctrl_on = "⊕ Dupla Ctrl be"
 double_ctrl_off = "⊖ Dupla Ctrl ki"
 double_ctrl_toggle_hint = "Kattints a dupla Ctrl aktiválásához / kikapcsolásához. Hasznos, ha a dupla Ctrl más alkalmazásokba is beleszól."
+chatter_filter = "Reszketés szűrő"
+cooldown = "Visszaállási idő"
 recorder_waiting = "— nyomjon billentyűkombinációt —"
 recorder_hint = "Nyomjon billentyűkombinációt, majd kattintson az OK-ra · Esc a törléshez"
 recorder_modifier_hint = "Most nyomjon egy betűt, számot vagy funkcióbillentyűt"

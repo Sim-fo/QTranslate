@@ -216,6 +216,7 @@ class MainGlobalKeyListener(
      */
     private inner class CustomSequenceListener : NativeKeyListener {
         private var lastCtrlTime = 0L
+        private var lastTriggerTime = 0L
         private val threshold = 400
 
         override fun nativeKeyReleased(e: NativeKeyEvent) {
@@ -227,8 +228,21 @@ class MainGlobalKeyListener(
             val binding = bindings.find { it.action == HotkeyAction.SHOW_MAIN_WINDOW }
             if (binding == null || !binding.isEnabled || !binding.isDoubleCtrlEnabled) return
 
+            val cooldown = binding.doubleCtrlCooldownMs
+            val debounce = binding.doubleCtrlDebounceMs
             val now = System.currentTimeMillis()
+            // Suppress duplicate triggers from keyboard bounce or rapid re-presses.
+            if (now - lastTriggerTime < cooldown) {
+                lastCtrlTime = now
+                return
+            }
+            // Keyboard chatter: two releases from one physical press are < debounce apart.
+            // Ignore the chatter event — wait for a real second tap.
+            if (now - lastCtrlTime < debounce) {
+                return
+            }
             if (now - lastCtrlTime < threshold) {
+                lastTriggerTime = now
                 scope.launch { handleSelectedText(onShowApp) }
             }
             lastCtrlTime = now

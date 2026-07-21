@@ -1,4 +1,4 @@
-﻿# ===================================================================
+# ===================================================================
 # META SECTION
 # ===================================================================
 [meta]
@@ -298,6 +298,8 @@ show_main_tooltip = "Double-Ctrl est toujours actif. Vous pouvez y ajouter un ra
 double_ctrl_on = "⊕ Double Ctrl activé"
 double_ctrl_off = "⊖ Double Ctrl désactivé"
 double_ctrl_toggle_hint = "Cliquez pour activer / désactiver le déclencheur double Ctrl. Utile si le double Ctrl perturbe d'autres applications."
+chatter_filter = "Filtre de rebond"
+cooldown = "Délai"
 recorder_waiting = "— appuyez sur une combinaison de touches —"
 recorder_hint = "Appuyez sur une combinaison, puis cliquez sur OK · Échap pour annuler"
 recorder_modifier_hint = "Appuyez maintenant sur une lettre, un chiffre ou une touche de fonction"

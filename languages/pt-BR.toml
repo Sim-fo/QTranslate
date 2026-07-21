@@ -1,4 +1,4 @@
-﻿# ===================================================================
+# ===================================================================
 # META SECTION
 # ===================================================================
 [meta]
@@ -298,6 +298,8 @@ show_main_tooltip = "Ctrl Duplo está sempre ativo. Opcionalmente, você pode ad
 double_ctrl_on = "⊕ Ctrl Duplo"
 double_ctrl_off = "⊖ Ctrl Duplo"
 double_ctrl_toggle_hint = "Clique para ativar / desativar o gatilho de Ctrl duplo. Útil se o Ctrl duplo interferir com outros aplicativos."
+chatter_filter = "Filtro de ruído"
+cooldown = "Intervalo"
 recorder_waiting = "— pressione uma combinação de teclas —"
 recorder_hint = "Pressione uma combinação, depois clique em OK · Esc para cancelar"
 recorder_modifier_hint = "Agora pressione uma letra, número ou tecla de função"

@@ -1,4 +1,4 @@
-﻿# ===================================================================
+# ===================================================================
 # META SECTION
 # ===================================================================
 [meta]
@@ -298,6 +298,8 @@ show_main_tooltip = "Doppio Ctrl è sempre attivo. Puoi aggiungere opzionalmente
 double_ctrl_on = "⊕ Doppio Ctrl attivo"
 double_ctrl_off = "⊖ Doppio Ctrl disattivo"
 double_ctrl_toggle_hint = "Clicca per abilitare / disabilitare il trigger doppio Ctrl. Utile se il doppio Ctrl interferisce con altre app."
+chatter_filter = "Filtro rimbalzo"
+cooldown = "Tempo di attesa"
 recorder_waiting = "— premi una combinazione di tasti —"
 recorder_hint = "Premi una combinazione, poi clicca OK · Esc per annullare"
 recorder_modifier_hint = "Ora premi una lettera, un numero o un tasto funzione"
