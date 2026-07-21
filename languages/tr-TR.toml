@@ -1,4 +1,4 @@
-﻿# ===================================================================
+# ===================================================================
 # META SECTION
 # ===================================================================
 [meta]
@@ -298,6 +298,8 @@ show_main_tooltip = "Çift Ctrl her zaman aktiftir. İsteğe bağlı olarak bura
 double_ctrl_on = "⊕ Çift Ctrl"
 double_ctrl_off = "⊖ Çift Ctrl"
 double_ctrl_toggle_hint = "Çift Ctrl tetikleyicisini etkinleştirmek / devre dışı bırakmak için tıklayın. Diğer uygulamalarla çakışıyorsa kullanışlıdır."
+chatter_filter = "Saptama filtresi"
+cooldown = "Soğuma süresi"
 recorder_waiting = "— bir tuş kombinasyonu basın —"
 recorder_hint = "Bir tuş kombinasyonu basın, ardından OK'ye tıklayın · Esc ile iptal"
 recorder_modifier_hint = "Şimdi bir harf, rakam veya fonksiyon tuşuna basın"

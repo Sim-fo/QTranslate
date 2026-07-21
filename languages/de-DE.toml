@@ -1,4 +1,4 @@
-﻿# ===================================================================
+# ===================================================================
 # META SECTION
 # ===================================================================
 [meta]
@@ -298,6 +298,8 @@ show_main_tooltip = "Doppel-Strg ist immer aktiv. Optional können Sie hier eine
 double_ctrl_on = "⊕ Doppel-Strg"
 double_ctrl_off = "⊖ Doppel-Strg"
 double_ctrl_toggle_hint = "Klicken, um den Doppel-Strg-Auslöser zu aktivieren / deaktivieren. Nützlich, wenn Doppel-Strg andere Apps stört."
+chatter_filter = "Chatter-Filter"
+cooldown = "Abklingzeit"
 recorder_waiting = "— Tastenkombination drücken —"
 recorder_hint = "Tastenkombination drücken, dann OK klicken · Esc zum Abbrechen"
 recorder_modifier_hint = "Jetzt einen Buchstaben, eine Zahl oder Funktionstaste drücken"

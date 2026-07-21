@@ -139,7 +139,11 @@ data class HotkeyBinding(
     val modifiers: Int = 0,
     val isEnabled: Boolean = true,
     val scope: HotkeyScope = HotkeyScope.GLOBAL,
-    val isDoubleCtrlEnabled: Boolean = true   // SHOW_MAIN_WINDOW only
+    val isDoubleCtrlEnabled: Boolean = true,   // SHOW_MAIN_WINDOW only
+    /** Keyboard chatter filter: releases closer than this (ms) are ignored. */
+    val doubleCtrlDebounceMs: Int = 80,
+    /** Cooldown after a successful double-Ctrl trigger (ms). */
+    val doubleCtrlCooldownMs: Int = 1000,
 ) {
     val hasBinding: Boolean get() = keyCode != 0
 

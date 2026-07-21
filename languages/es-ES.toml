@@ -1,4 +1,4 @@
-﻿# ===================================================================
+# ===================================================================
 # META SECTION
 # ===================================================================
 [meta]
@@ -298,6 +298,8 @@ show_main_tooltip = "Doble Ctrl siempre está activo. Opcionalmente puedes añad
 double_ctrl_on = "⊕ Ctrl doble"
 double_ctrl_off = "⊖ Ctrl doble"
 double_ctrl_toggle_hint = "Haz clic para activar / desactivar el disparador de doble Ctrl. Útil si interfiere con otras aplicaciones."
+chatter_filter = "Filtro de rebote"
+cooldown = "Enfriamiento"
 recorder_waiting = "— pulsa una combinación de teclas —"
 recorder_hint = "Pulsa una combinación, luego haz clic en OK · Esc para cancelar"
 recorder_modifier_hint = "Ahora pulsa una letra, número o tecla de función"

@@ -1,4 +1,4 @@
-﻿# ===================================================================
+# ===================================================================
 # META SECTION
 # ===================================================================
 [meta]
@@ -298,6 +298,8 @@ show_main_tooltip = "Double-tap Ctrl is always active. You can optionally add an
 double_ctrl_on = "⊕ Double Ctrl"
 double_ctrl_off = "⊖ Double Ctrl"
 double_ctrl_toggle_hint = "Click to enable / disable the double-tap Ctrl trigger. Useful if double-Ctrl interferes with other apps."
+chatter_filter = "Chatter filter"
+cooldown = "Cooldown"
 recorder_waiting = "— press a key combination —"
 recorder_hint = "Press a key combination, then click OK · Esc to cancel"
 recorder_modifier_hint = "Now press a letter, number or function key"

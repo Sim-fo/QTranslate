@@ -29,6 +29,9 @@ class KeyboardPanel(
     private lateinit var editButton:  JButton
     private lateinit var clearButton: JButton
     private lateinit var resetButton: JButton
+    private lateinit var doubleCtrlPanel: JPanel
+    private lateinit var debounceSpinner: JSpinner
+    private lateinit var cooldownSpinner: JSpinner
 
     private val actionOrder = listOf(
         HotkeyAction.SHOW_MAIN_WINDOW,
@@ -153,6 +156,40 @@ class KeyboardPanel(
                 add(resetButton)
             })
 
+        // Double Ctrl sensitivity settings — shown when SHOW_MAIN_WINDOW row is selected.
+        debounceSpinner = JSpinner(SpinnerNumberModel(80, 20, 500, 10))
+        cooldownSpinner = JSpinner(SpinnerNumberModel(1000, 200, 5000, 100))
+        debounceSpinner.preferredSize = Dimension(70, 24)
+        cooldownSpinner.preferredSize = Dimension(70, 24)
+
+        doubleCtrlPanel = JPanel(GridBagLayout()).apply {
+            isOpaque = false
+            val gbc = GridBagConstraints().apply {
+                anchor = GridBagConstraints.WEST
+                insets = Insets(2, 4, 2, 4)
+            }
+            gbc.gridx = 0; gbc.gridy = 0; add(JLabel(localizationManager.getString("settings_hotkeys.chatter_filter")), gbc)
+            gbc.gridx = 1; add(debounceSpinner, gbc)
+            gbc.gridx = 2; add(JLabel("ms"), gbc)
+            gbc.gridx = 3; gbc.insets = Insets(2, 16, 2, 4); add(JLabel(localizationManager.getString("settings_hotkeys.cooldown")), gbc)
+            gbc.gridx = 4; gbc.insets = Insets(2, 4, 2, 4); add(cooldownSpinner, gbc)
+            gbc.gridx = 5; add(JLabel("ms"), gbc)
+        }
+        doubleCtrlPanel.isVisible = false
+
+        debounceSpinner.addChangeListener {
+            if (isUpdatingFromState) return@addChangeListener
+            updateDoubleCtrlSetting { it.copy(doubleCtrlDebounceMs = debounceSpinner.value as Int) }
+        }
+        cooldownSpinner.addChangeListener {
+            if (isUpdatingFromState) return@addChangeListener
+            updateDoubleCtrlSetting { it.copy(doubleCtrlCooldownMs = cooldownSpinner.value as Int) }
+        }
+
+        gb.nextRow().spanLine().weightX(1.0).fill(GridBagConstraints.HORIZONTAL)
+            .insets(4, 0, 0, 0)
+            .add(doubleCtrlPanel)
+
         finishLayout()
     }
 
@@ -226,12 +263,21 @@ class KeyboardPanel(
         })
     }
 
+    private fun updateDoubleCtrlSetting(transform: (HotkeyBinding) -> HotkeyBinding) {
+        val current = store.state.value.workingConfiguration.hotkeys
+            .find { it.action == HotkeyAction.SHOW_MAIN_WINDOW } ?: return
+        saveBinding(transform(current))
+    }
+
     private fun updateButtonStates() {
         val row        = table.selectedRow
         val isEditable = row >= 0 && actionOrder.getOrNull(row) !in nonEditableActions
         val enabled    = enableCheck.isSelected
         editButton.isEnabled  = isEditable && enabled
         clearButton.isEnabled = isEditable && enabled
+        // Show double Ctrl sensitivity settings only when SHOW_MAIN_WINDOW is selected.
+        val showDoubleCtrl = row >= 0 && actionOrder.getOrNull(row) == HotkeyAction.SHOW_MAIN_WINDOW
+        doubleCtrlPanel.isVisible = showDoubleCtrl
     }
 
 
@@ -246,6 +292,11 @@ class KeyboardPanel(
                 model.setValueAt(binding, row, COL_HOTKEY)
                 model.setValueAt(scopeLabel(binding?.scope ?: HotkeyScope.GLOBAL), row, COL_SCOPE)
             }
+
+            // Sync double Ctrl sensitivity spinners.
+            val doubleCtrl = c.hotkeys.find { it.action == HotkeyAction.SHOW_MAIN_WINDOW }
+            debounceSpinner.value = doubleCtrl?.doubleCtrlDebounceMs ?: 80
+            cooldownSpinner.value = doubleCtrl?.doubleCtrlCooldownMs ?: 1000
 
             table.isEnabled = c.isGlobalHotkeysEnabled
             updateButtonStates()

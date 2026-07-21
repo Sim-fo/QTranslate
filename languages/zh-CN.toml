@@ -1,4 +1,4 @@
-﻿# ===================================================================
+# ===================================================================
 # META SECTION
 # ===================================================================
 [meta]
@@ -298,6 +298,8 @@ show_main_tooltip = "连按两次 Ctrl 始终有效。您可以在此处选择�
 double_ctrl_on = "⊕ 双击 Ctrl"
 double_ctrl_off = "⊖ 双击 Ctrl"
 double_ctrl_toggle_hint = "点击以启用 / 禁用双击 Ctrl 触发器。如果双击 Ctrl 干扰其他应用程序，此选项很有用。"
+chatter_filter = "防抖过滤"
+cooldown = "冷却时间"
 recorder_waiting = "— 按下一个按键组合 —"
 recorder_hint = "按下组合键，然后点击OK · Esc取消"
 recorder_modifier_hint = "现在按一个字母、数字或功能键"

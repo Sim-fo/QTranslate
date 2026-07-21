@@ -20,4 +20,5 @@ dependencies {
 
     implementation(libs.kotlinxCoroutinesSwing)
 
+    testImplementation(kotlin("test"))
 }
