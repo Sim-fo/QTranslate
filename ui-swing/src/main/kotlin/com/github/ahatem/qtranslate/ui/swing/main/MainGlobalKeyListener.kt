@@ -13,6 +13,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.awt.Robot
 import java.awt.Toolkit
+import java.awt.datatransfer.Clipboard
 import java.awt.datatransfer.DataFlavor
 import java.awt.event.KeyEvent
 import java.util.concurrent.atomic.AtomicBoolean
@@ -40,7 +41,8 @@ import java.util.concurrent.atomic.AtomicBoolean
  */
 class MainGlobalKeyListener(
     private val scope: CoroutineScope,
-    private val onShowApp: (String) -> Unit,
+    /** Receives the captured selection, or `null` when nothing was selected. */
+    private val onShowApp: (String?) -> Unit,
     private val onShowQuickTranslate: (String) -> Unit,
     private val onListenToText: (String) -> Unit,
     private val onOpenSnippingTool: () -> Unit,
@@ -56,6 +58,11 @@ class MainGlobalKeyListener(
     private val sequenceListener = CustomSequenceListener()
     private val clipboardLock = AtomicBoolean(false)
     private val hotkeysEnabled = AtomicBoolean(true)
+    // Raised while [simulateCopy] is injecting Ctrl+C at OS level. The native hook
+    // cannot tell our own synthetic keys from the user's, so it must ignore events
+    // while this is up — otherwise the app feeds its own Ctrl presses back into the
+    // double-Ctrl detector and re-triggers itself.
+    private val syntheticInput = AtomicBoolean(false)
     // AtomicBoolean.compareAndSet prevents double-initialization if initialize()
     // is called concurrently (e.g. from two rapid lifecycle events).
     private val initialized = AtomicBoolean(false)
@@ -217,7 +224,7 @@ class MainGlobalKeyListener(
             HotkeyAction.OPEN_OCR ->
                 onOpenSnippingTool()
             HotkeyAction.SHOW_MAIN_WINDOW ->
-                scope.launch { handleSelectedText(onShowApp) }
+                scope.launch { showMainWindow() }
             HotkeyAction.REPLACE_WITH_TRANSLATION ->
                 scope.launch { handleSelectedText(onReplaceWithTranslation) }
             HotkeyAction.CYCLE_TARGET_LANGUAGE ->
@@ -405,6 +412,9 @@ class MainGlobalKeyListener(
         }
 
         override fun nativeKeyPressed(e: NativeKeyEvent) {
+            // Our own Robot-injected Ctrl+C — not a user keystroke.
+            if (syntheticInput.get()) return
+
             // Start verbose logging on first Ctrl press
             if (e.keyCode == NativeKeyEvent.VC_CONTROL && !verboseLogging) {
                 startVerboseMode()
@@ -423,6 +433,9 @@ class MainGlobalKeyListener(
         }
 
         override fun nativeKeyReleased(e: NativeKeyEvent) {
+            // Our own Robot-injected Ctrl+C — not a user keystroke.
+            if (syntheticInput.get()) return
+
             logKeyEvent("released", e.keyCode)
 
             if (verboseLogging && e.keyCode != NativeKeyEvent.VC_CONTROL) {
@@ -472,7 +485,7 @@ class MainGlobalKeyListener(
             if (now - lastCtrlTime < threshold) {
                 lastTriggerTime = now
                 endSequence("gap=${now - lastCtrlTime}ms within threshold", "TRIGGER")
-                scope.launch { handleSelectedText(onShowApp) }
+                scope.launch { showMainWindow() }
             } else {
                 endSequence("gap=${now - lastCtrlTime}ms beyond threshold", "SKIP")
             }
@@ -480,36 +493,104 @@ class MainGlobalKeyListener(
         }
     }
 
-    private suspend fun handleSelectedText(callback: (String) -> Unit) {
-        if (!clipboardLock.compareAndSet(false, true)) return
+    /**
+     * Outcome of trying to copy whatever the user currently has selected.
+     *
+     * The three cases must stay distinct. An unchanged clipboard after a simulated
+     * Ctrl+C means *"nothing was selected"* — it does **not** mean the clipboard
+     * content is the selection. Collapsing those two is what allowed a stale
+     * clipboard to overwrite the input a moment after a real selection had already
+     * been translated.
+     */
+    private sealed interface Capture {
+        /** A fresh selection was copied. */
+        data class Text(val value: String) : Capture
+        /** Ctrl+C produced nothing new — the user had no selection. */
+        data object None : Capture
+        /** A capture is already in flight; this invocation is an echo. */
+        data object Busy : Capture
+    }
+
+    /**
+     * Copies the current selection via a simulated Ctrl+C, then restores the
+     * clipboard to whatever the user had in it.
+     *
+     * Success is decided by comparing the clipboard before and after: if it did
+     * not change, the focused app had nothing to give us.
+     */
+    private suspend fun captureSelection(): Capture {
+        if (!clipboardLock.compareAndSet(false, true)) return Capture.Busy
         try {
             val clipboard = Toolkit.getDefaultToolkit().systemClipboard
             val original  = runCatching { clipboard.getContents(null) }.getOrNull()
-            val originalText = original?.let {
-                runCatching { it.getTransferData(DataFlavor.stringFlavor).toString() }.getOrNull()
-            }
+            val before    = readClipboardText(clipboard)
 
-            var text: String? = null
-            repeat(2) {
+            var copied: String? = null
+            for (attempt in 1..COPY_ATTEMPTS) {
                 simulateCopy()
-                delay(50)
-                text = runCatching {
-                    if (clipboard.isDataFlavorAvailable(DataFlavor.stringFlavor))
-                        clipboard.getData(DataFlavor.stringFlavor).toString().trim()
-                    else null
-                }.getOrNull()
-                if (!text.isNullOrEmpty()) return@repeat
+                delay(CLIPBOARD_SETTLE_MS)
+                syntheticInput.set(false)
+
+                val after = readClipboardText(clipboard)
+                if (!after.isNullOrEmpty() && after != before) {
+                    copied = after
+                    break
+                }
             }
 
-            if (text.isNullOrEmpty()) text = originalText ?: ""
-            callback(text)
             original?.let { runCatching { clipboard.setContents(it, null) } }
+
+            return copied?.let { Capture.Text(it) }
+                ?: Capture.None.also { logger?.debug("captureSelection: no selection captured") }
         } finally {
+            syntheticInput.set(false)
             clipboardLock.set(false)
         }
     }
 
+    /**
+     * Opens the main window. When there is no selection the window still opens,
+     * but the input is left untouched — filling it from the clipboard here is
+     * what produced the "translated text replaced by stale clipboard" bug.
+     */
+    private suspend fun showMainWindow() {
+        when (val capture = captureSelection()) {
+            is Capture.Text -> onShowApp(capture.value)
+            Capture.None    -> onShowApp(null)
+            Capture.Busy    -> Unit
+        }
+    }
+
+    /**
+     * Captures the selection for actions that are pointless without text
+     * (Quick Translate, dictionary, TTS, inline replace).
+     *
+     * These keep the clipboard fallback: they have no existing input for a stale
+     * value to destroy, and acting on the clipboard when nothing is selected is
+     * long-standing behaviour.
+     */
+    private suspend fun handleSelectedText(callback: (String) -> Unit) {
+        val text = when (val capture = captureSelection()) {
+            is Capture.Text -> capture.value
+            Capture.None    -> readClipboardText(Toolkit.getDefaultToolkit().systemClipboard).orEmpty()
+            Capture.Busy    -> return
+        }
+        if (text.isNotEmpty()) callback(text)
+    }
+
+    private fun readClipboardText(clipboard: Clipboard): String? = runCatching {
+        if (clipboard.isDataFlavorAvailable(DataFlavor.stringFlavor))
+            clipboard.getData(DataFlavor.stringFlavor).toString().trim()
+        else null
+    }.getOrNull()
+
+    /**
+     * Injects Ctrl+C at OS level. Raises [syntheticInput] first so the native hook
+     * discards the keys we are about to press; the caller lowers it once the
+     * clipboard has settled.
+     */
     private fun simulateCopy() {
+        syntheticInput.set(true)
         runCatching {
             val robot = Robot()
             robot.autoDelay = 20
@@ -517,6 +598,14 @@ class MainGlobalKeyListener(
             robot.keyPress(KeyEvent.VK_C)
             robot.keyRelease(KeyEvent.VK_C)
             robot.keyRelease(KeyEvent.VK_CONTROL)
-        }.onFailure { System.err.println("Copy simulation failed: ${it.message}") }
+        }.onFailure { logger?.error("Copy simulation failed", it) }
+    }
+
+    private companion object {
+        /** How many times to retry the copy before deciding nothing is selected. */
+        const val COPY_ATTEMPTS = 2
+
+        /** Time given to the focused app to put the selection on the clipboard. */
+        const val CLIPBOARD_SETTLE_MS = 50L
     }
 }

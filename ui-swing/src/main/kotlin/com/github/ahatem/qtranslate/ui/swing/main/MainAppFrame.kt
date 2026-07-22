@@ -155,8 +155,11 @@ class MainAppFrame(
     private val globalKeyListener = MainGlobalKeyListener(
         scope = appScope,
         onShowApp = { text ->
-            mainStore.dispatch(MainIntent.UpdateInputText(text))
-            mainStore.dispatch(MainIntent.Translate(text))
+            // text == null → nothing was selected: show the window, leave the input as it is.
+            if (text != null) {
+                mainStore.dispatch(MainIntent.UpdateInputText(text))
+                mainStore.dispatch(MainIntent.Translate(text))
+            }
             runOnUi { showAndFocus() }
         },
         onShowQuickTranslate = { text ->
