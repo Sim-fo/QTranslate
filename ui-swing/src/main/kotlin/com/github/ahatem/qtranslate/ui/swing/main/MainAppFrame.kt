@@ -65,7 +65,8 @@ class MainAppFrame(
     private val themeManager: ThemeManager,
     private val pluginManager: PluginManager,
     private val localizer: LocalizationManager,
-    private val notificationBus: com.github.ahatem.qtranslate.core.shared.notification.NotificationBus
+    private val notificationBus: com.github.ahatem.qtranslate.core.shared.notification.NotificationBus,
+    private val logger: com.github.ahatem.qtranslate.api.core.Logger? = null
 ) : JFrame("QTranslate") {
 
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default + CoroutineName("MainAppFrame"))
@@ -188,7 +189,8 @@ class MainAppFrame(
                 mainStore.dispatch(MainIntent.ShowQuickDictionary(selectedText, lang))
             }
         },
-        onTranslate = { mainStore.dispatch(MainIntent.Translate()) }
+        onTranslate = { mainStore.dispatch(MainIntent.Translate()) },
+        logger = logger
     )
 
     private val statusBarController = StatusBarController(
@@ -720,7 +722,8 @@ class MainAppFrame(
         isVisible = true
         state = NORMAL
         toFront()
-        mainContentView.requestFocusOnInput()
+        val focusResult = mainContentView.requestFocusOnInput()
+        logger?.debug("showAndFocus: focusResult=$focusResult, isActive=$isActive, isFocused=$isFocused")
     }
 
     private fun openSnippingTool() {
@@ -932,7 +935,8 @@ class MainAppFrame(
 
         addWindowListener(object : WindowAdapter() {
             override fun windowOpened(e: WindowEvent?) {
-                mainContentView.requestFocusOnInput()
+                val focusResult = mainContentView.requestFocusOnInput()
+                logger?.debug("windowOpened: focusResult=$focusResult, isActive=$isActive, isFocused=$isFocused")
             }
 
             override fun windowClosing(e: WindowEvent?) {
@@ -1186,6 +1190,13 @@ class MainAppFrame(
         if (!Desktop.isDesktopSupported() || !Desktop.getDesktop().isSupported(Desktop.Action.BROWSE)) return
         runCatching { Desktop.getDesktop().browse(URI(url)) }
     }
+
+    /** Checks if the global hotkey system is alive. Used by HeartbeatMonitor. */
+    fun isHotkeySystemAlive(): Boolean =
+        globalKeyListener.isNativeHookAlive() && globalKeyListener.isProviderAlive()
+
+    /** Attempts to re-initialize the global hotkey system. Used by HeartbeatMonitor. */
+    fun tryRecoverHotkeySystem(): Boolean = globalKeyListener.tryReinitialize()
 
     private fun onShowAboutDialog() {
         val state = InfoDialogState(

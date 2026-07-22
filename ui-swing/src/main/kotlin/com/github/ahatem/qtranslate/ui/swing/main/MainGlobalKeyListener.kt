@@ -47,7 +47,8 @@ class MainGlobalKeyListener(
     private val onReplaceWithTranslation: (String) -> Unit,
     private val onCycleTargetLanguage: () -> Unit,
     private val onShowDictionary: (String) -> Unit = {},
-    private val onTranslate: () -> Unit = {}
+    private val onTranslate: () -> Unit = {},
+    private val logger: com.github.ahatem.qtranslate.api.core.Logger? = null
 ) {
 
     private var provider: Provider? = null
@@ -91,6 +92,56 @@ class MainGlobalKeyListener(
     }
 
     fun areHotkeysEnabled(): Boolean = hotkeysEnabled.get()
+
+    /**
+     * Checks if the native hook is alive and the provider is functional.
+     * Used by HeartbeatMonitor to detect hook death.
+     */
+    fun isNativeHookAlive(): Boolean {
+        if (!nativeHookRegistered) return false
+        return try {
+            GlobalScreen.isNativeHookRegistered()
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    /**
+     * Checks if the keymaster Provider is alive.
+     */
+    fun isProviderAlive(): Boolean {
+        return provider != null
+    }
+
+    /**
+     * Attempts to re-register the native hook if it has died.
+     * Called by HeartbeatMonitor when it detects hook failure.
+     */
+    fun tryReinitialize(): Boolean {
+        if (!initialized.get()) return false
+        if (isNativeHookAlive() && isProviderAlive()) return true
+
+        System.err.println("[Hotkeys] Hotkey system appears dead, attempting re-initialization...")
+        try {
+            // Clean up dead components
+            try {
+                if (nativeHookRegistered) {
+                    GlobalScreen.removeNativeKeyListener(sequenceListener)
+                    GlobalScreen.unregisterNativeHook()
+                    nativeHookRegistered = false
+                }
+            } catch (_: Exception) { }
+
+            // Re-initialize everything
+            initJKeyMaster()
+            initJNativeHook()
+            println("[Hotkeys] Hotkey system re-initialized successfully")
+            return true
+        } catch (e: Exception) {
+            System.err.println("[Hotkeys] Re-initialization failed: ${e.message}")
+            return false
+        }
+    }
 
     /**
      * Returns bindings with [HotkeyScope.LOCAL] scope that are enabled and have a key.
@@ -219,32 +270,211 @@ class MainGlobalKeyListener(
         private var lastTriggerTime = 0L
         private val threshold = 400
 
+        // --- Verbose logging state ---
+        private var verboseLogging = false
+        private var verboseUntil = 0L
+        private var firstCtrlPressTime = 0L
+        private val keysBetweenCtrl = mutableListOf<String>()
+        private var lastEventTime = 0L
+        private var ctrlPressCount = 0
+        private var ctrlReleaseCount = 0
+        private var filterSkips = mutableListOf<String>()
+
+        private fun keyName(code: Int): String = when (code) {
+            NativeKeyEvent.VC_CONTROL -> "VK_CONTROL"
+            NativeKeyEvent.VC_SHIFT -> "VK_SHIFT"
+            NativeKeyEvent.VC_ALT -> "VK_ALT"
+            NativeKeyEvent.VC_META -> "VK_META"
+            NativeKeyEvent.VC_ESCAPE -> "VK_ESCAPE"
+            NativeKeyEvent.VC_ENTER -> "VK_ENTER"
+            NativeKeyEvent.VC_SPACE -> "VK_SPACE"
+            NativeKeyEvent.VC_TAB -> "VK_TAB"
+            NativeKeyEvent.VC_BACKSPACE -> "VK_BACKSPACE"
+            NativeKeyEvent.VC_DELETE -> "VK_DELETE"
+            NativeKeyEvent.VC_LEFT -> "VK_LEFT"
+            NativeKeyEvent.VC_RIGHT -> "VK_RIGHT"
+            NativeKeyEvent.VC_UP -> "VK_UP"
+            NativeKeyEvent.VC_DOWN -> "VK_DOWN"
+            NativeKeyEvent.VC_A -> "VK_A"
+            NativeKeyEvent.VC_B -> "VK_B"
+            NativeKeyEvent.VC_C -> "VK_C"
+            NativeKeyEvent.VC_D -> "VK_D"
+            NativeKeyEvent.VC_E -> "VK_E"
+            NativeKeyEvent.VC_F -> "VK_F"
+            NativeKeyEvent.VC_G -> "VK_G"
+            NativeKeyEvent.VC_H -> "VK_H"
+            NativeKeyEvent.VC_I -> "VK_I"
+            NativeKeyEvent.VC_J -> "VK_J"
+            NativeKeyEvent.VC_K -> "VK_K"
+            NativeKeyEvent.VC_L -> "VK_L"
+            NativeKeyEvent.VC_M -> "VK_M"
+            NativeKeyEvent.VC_N -> "VK_N"
+            NativeKeyEvent.VC_O -> "VK_O"
+            NativeKeyEvent.VC_P -> "VK_P"
+            NativeKeyEvent.VC_Q -> "VK_Q"
+            NativeKeyEvent.VC_R -> "VK_R"
+            NativeKeyEvent.VC_S -> "VK_S"
+            NativeKeyEvent.VC_T -> "VK_T"
+            NativeKeyEvent.VC_U -> "VK_U"
+            NativeKeyEvent.VC_V -> "VK_V"
+            NativeKeyEvent.VC_W -> "VK_W"
+            NativeKeyEvent.VC_X -> "VK_X"
+            NativeKeyEvent.VC_Y -> "VK_Y"
+            NativeKeyEvent.VC_Z -> "VK_Z"
+            NativeKeyEvent.VC_0 -> "VK_0"
+            NativeKeyEvent.VC_1 -> "VK_1"
+            NativeKeyEvent.VC_2 -> "VK_2"
+            NativeKeyEvent.VC_3 -> "VK_3"
+            NativeKeyEvent.VC_4 -> "VK_4"
+            NativeKeyEvent.VC_5 -> "VK_5"
+            NativeKeyEvent.VC_6 -> "VK_6"
+            NativeKeyEvent.VC_7 -> "VK_7"
+            NativeKeyEvent.VC_8 -> "VK_8"
+            NativeKeyEvent.VC_9 -> "VK_9"
+            NativeKeyEvent.VC_F1 -> "VK_F1"
+            NativeKeyEvent.VC_F2 -> "VK_F2"
+            NativeKeyEvent.VC_F3 -> "VK_F3"
+            NativeKeyEvent.VC_F4 -> "VK_F4"
+            NativeKeyEvent.VC_F5 -> "VK_F5"
+            NativeKeyEvent.VC_F6 -> "VK_F6"
+            NativeKeyEvent.VC_F7 -> "VK_F7"
+            NativeKeyEvent.VC_F8 -> "VK_F8"
+            NativeKeyEvent.VC_F9 -> "VK_F9"
+            NativeKeyEvent.VC_F10 -> "VK_F10"
+            NativeKeyEvent.VC_F11 -> "VK_F11"
+            NativeKeyEvent.VC_F12 -> "VK_F12"
+            else -> "VK_0x${code.toString(16).uppercase()}"
+        }
+
+        private fun log(msg: String) {
+            logger?.debug(msg) ?: println(msg)
+        }
+
+        private fun startVerboseMode() {
+            verboseLogging = true
+            verboseUntil = System.currentTimeMillis() + 1000
+            firstCtrlPressTime = System.currentTimeMillis()
+            keysBetweenCtrl.clear()
+            filterSkips.clear()
+            ctrlPressCount = 0
+            ctrlReleaseCount = 0
+            lastEventTime = firstCtrlPressTime
+            log("[DoubleCtrl] === Ctrl pressed — verbose logging ON for 1s ===")
+        }
+
+        private fun stopVerboseMode() {
+            verboseLogging = false
+            log("[DoubleCtrl] === Verbose logging OFF (1s expired) ===")
+        }
+
+        private fun logKeyEvent(type: String, code: Int) {
+            if (!verboseLogging) return
+            val now = System.currentTimeMillis()
+            if (now > verboseUntil) {
+                stopVerboseMode()
+                return
+            }
+            val gap = now - lastEventTime
+            val elapsed = now - firstCtrlPressTime
+            val tag = if (code != NativeKeyEvent.VC_CONTROL) " [BETWEEN]" else ""
+            log("[KeyLog] t+${elapsed}ms $type ${keyName(code)}(0x${code.toString(16)}) gap=${gap}ms$tag")
+            lastEventTime = now
+        }
+
+        private fun endSequence(cause: String, verdict: String) {
+            val elapsed = System.currentTimeMillis() - firstCtrlPressTime
+            val summary = buildString {
+                append("[DoubleCtrl] === Sequence end: ")
+                append("t=${elapsed}ms | ")
+                append("ctrlPressed=$ctrlPressCount ctrlReleased=$ctrlReleaseCount | ")
+                append("keysBetween=${keysBetweenCtrl.size} (${keysBetweenCtrl.joinToString()}) | ")
+                if (filterSkips.isNotEmpty()) append("filterSkips=[${filterSkips.joinToString("; ")}] | ")
+                append("cause=$cause → $verdict ===")
+            }
+            log(summary)
+            verboseLogging = false
+            keysBetweenCtrl.clear()
+        }
+
+        private fun logNonCtrlRelease(code: Int) {
+            if (!verboseLogging) return
+            val now = System.currentTimeMillis()
+            if (now > verboseUntil) return
+            val elapsed = now - firstCtrlPressTime
+            log("[KeyLog] t+${elapsed}ms released ${keyName(code)}(0x${code.toString(16)}) [BETWEEN-RELEASE]")
+        }
+
+        override fun nativeKeyPressed(e: NativeKeyEvent) {
+            // Start verbose logging on first Ctrl press
+            if (e.keyCode == NativeKeyEvent.VC_CONTROL && !verboseLogging) {
+                startVerboseMode()
+            }
+
+            logKeyEvent("pressed ", e.keyCode)
+
+            if (verboseLogging && e.keyCode == NativeKeyEvent.VC_CONTROL) {
+                ctrlPressCount++
+                log("[Filter] Ctrl press #$ctrlPressCount")
+            }
+
+            if (verboseLogging && e.keyCode != NativeKeyEvent.VC_CONTROL) {
+                keysBetweenCtrl.add(keyName(e.keyCode))
+            }
+        }
+
         override fun nativeKeyReleased(e: NativeKeyEvent) {
-            if (!hotkeysEnabled.get()) return
+            logKeyEvent("released", e.keyCode)
+
+            if (verboseLogging && e.keyCode != NativeKeyEvent.VC_CONTROL) {
+                logNonCtrlRelease(e.keyCode)
+            }
+
+            if (verboseLogging && e.keyCode == NativeKeyEvent.VC_CONTROL) {
+                ctrlReleaseCount++
+                log("[Filter] Ctrl release #$ctrlReleaseCount")
+            }
+
+            if (!hotkeysEnabled.get()) {
+                if (verboseLogging) filterSkips.add("hotkeys disabled")
+                return
+            }
             if (e.keyCode != NativeKeyEvent.VC_CONTROL) return
 
             // Only fire if the binding exists, is enabled, AND the user
             // has not opted out of the double-Ctrl mechanism specifically.
             val binding = bindings.find { it.action == HotkeyAction.SHOW_MAIN_WINDOW }
-            if (binding == null || !binding.isEnabled || !binding.isDoubleCtrlEnabled) return
+            if (binding == null || !binding.isEnabled || !binding.isDoubleCtrlEnabled) {
+                if (verboseLogging) filterSkips.add("binding disabled")
+                return
+            }
 
             val cooldown = binding.doubleCtrlCooldownMs
             val debounce = binding.doubleCtrlDebounceMs
             val now = System.currentTimeMillis()
-            // Suppress duplicate triggers from keyboard bounce or rapid re-presses.
-            // Do NOT update lastCtrlTime — after cooldown expires, the next release
-            // must be a fresh first tap, not a false second tap.
+
+            // If within cooldown — log and skip
             if (now - lastTriggerTime < cooldown) {
+                endSequence("within cooldown (${now - lastTriggerTime}ms < ${cooldown}ms)", "SKIP")
                 return
             }
-            // Keyboard chatter: two releases from one physical press are < debounce apart.
-            // Ignore the chatter event — wait for a real second tap.
+            // If within debounce — log and skip
             if (now - lastCtrlTime < debounce) {
+                endSequence("within debounce (${now - lastCtrlTime}ms < ${debounce}ms)", "SKIP")
                 return
             }
+            // If other keys were pressed between Ctrl releases — log and skip
+            if (keysBetweenCtrl.isNotEmpty()) {
+                endSequence("other key(s) between: ${keysBetweenCtrl.joinToString()}", "SKIP")
+                lastCtrlTime = now
+                return
+            }
+            // If within threshold — trigger
             if (now - lastCtrlTime < threshold) {
                 lastTriggerTime = now
+                endSequence("gap=${now - lastCtrlTime}ms within threshold", "TRIGGER")
                 scope.launch { handleSelectedText(onShowApp) }
+            } else {
+                endSequence("gap=${now - lastCtrlTime}ms beyond threshold", "SKIP")
             }
             lastCtrlTime = now
         }

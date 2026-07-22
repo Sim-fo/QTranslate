@@ -18,6 +18,7 @@ import javax.swing.SwingUtilities
 fun main() = runBlocking {
 
     var frame: MainAppFrame? = null
+    var heartbeatMonitor: HeartbeatMonitor? = null
 
     if (!SingleInstanceGuard.tryLock(onFocusRequested = {
             SwingUtilities.invokeLater {
@@ -31,16 +32,18 @@ fun main() = runBlocking {
         return@runBlocking
     }
 
-    Runtime.getRuntime().addShutdownHook(Thread {
-        SingleInstanceGuard.release()
-    })
-
     AppUiSetup.setSystemProperties()
     AppUiSetup.setRenderingHints()
 
     val appData    = AppDataDirectory.resolve()
-    val logFactory = ConsoleLoggerFactory(ConsoleLoggerFactory.LogLevel.DEBUG)
+    val logFactory = FileLoggerFactory(File(appData, "logs"))
     val logger     = logFactory.getLogger("Main")
+
+    Runtime.getRuntime().addShutdownHook(Thread {
+        heartbeatMonitor?.stop()
+        SingleInstanceGuard.release()
+        logFactory.close()
+    })
 
     logger.info("QTranslate ${AppConstants.APP_VERSION} starting...")
     logger.info("App data directory: ${appData.absolutePath}")
@@ -111,9 +114,18 @@ fun main() = runBlocking {
             themeManager     = deps.themeManager,
             localizer        = deps.localizationManager,
             pluginManager    = deps.pluginManager,
-            notificationBus  = deps.notificationBus
+            notificationBus  = deps.notificationBus,
+            logger           = logFactory.getLogger("MainAppFrame")
         )
         logger.info("Main window launched")
+
+        // Start heartbeat monitor — writes health status to log every 5 minutes
+        heartbeatMonitor = HeartbeatMonitor(
+            logger           = logFactory.getLogger("Heartbeat"),
+            mainStore        = { frame?.let { deps.mainStore } },
+            hotkeyHealthCheck = { frame?.isHotkeySystemAlive() ?: false },
+            hotkeyRecovery   = { frame?.tryRecoverHotkeySystem() ?: false }
+        ).also { it.start() }
     }
 
     Thread.currentThread().join()

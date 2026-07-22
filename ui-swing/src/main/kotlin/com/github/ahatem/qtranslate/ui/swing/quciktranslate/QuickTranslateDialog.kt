@@ -300,6 +300,7 @@ class QuickTranslateDialog(
         focusableWindowState = true
         installAwtMouseListener()
         if (!isPinned) startIdleHide()
+        println("[QuickTranslateDialog] showDialog: isVisible=$isVisible, focusableWindowState=$focusableWindowState, isActive=$isActive, isFocused=$isFocused")
     }
 
     private fun hideDialog() {
@@ -308,6 +309,7 @@ class QuickTranslateDialog(
         uninstallAwtMouseListener()
         isVisible = false
         focusableWindowState = false
+        println("[QuickTranslateDialog] hideDialog: position=${location}, size=${size}")
         onSavePosition(location.toPosition())
         onSaveSize(size.toSize())
     }

@@ -612,8 +612,8 @@ class MainContentView(
         )
     }
 
-    fun requestFocusOnInput() {
-        inputTextPanel.requestFocusInWindow()
+    fun requestFocusOnInput(): Boolean {
+        return inputTextPanel.requestFocusInWindow()
     }
 
     /**
