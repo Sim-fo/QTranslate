@@ -30,7 +30,8 @@ class QuickTranslateDialog(
     private val onCopy: () -> Unit,
     private val onSavePosition: (Position) -> Unit,
     private val onSaveSize: (Size) -> Unit,
-    private val onPinToggled: () -> Unit
+    private val onPinToggled: () -> Unit,
+    private val logger: com.github.ahatem.qtranslate.api.core.Logger? = null
 ) : JDialog(owner, ModalityType.MODELESS), Renderable<QuickTranslateDialogState> {
 
     private companion object {
@@ -300,7 +301,7 @@ class QuickTranslateDialog(
         focusableWindowState = true
         installAwtMouseListener()
         if (!isPinned) startIdleHide()
-        println("[QuickTranslateDialog] showDialog: isVisible=$isVisible, focusableWindowState=$focusableWindowState, isActive=$isActive, isFocused=$isFocused")
+        logger?.debug("showDialog: isVisible=$isVisible, focusableWindowState=$focusableWindowState, isActive=$isActive, isFocused=$isFocused")
     }
 
     private fun hideDialog() {
@@ -309,7 +310,7 @@ class QuickTranslateDialog(
         uninstallAwtMouseListener()
         isVisible = false
         focusableWindowState = false
-        println("[QuickTranslateDialog] hideDialog: position=${location}, size=${size}")
+        logger?.debug("hideDialog: position=${location}, size=${size}")
         onSavePosition(location.toPosition())
         onSaveSize(size.toSize())
     }

@@ -76,8 +76,7 @@ class MainGlobalKeyListener(
             initJNativeHook()
         } catch (e: Exception) {
             initialized.set(false)   // allow retry if initialization itself failed
-            System.err.println("Hotkey initialization failed: ${e.message}")
-            e.printStackTrace()
+            logger?.error("Hotkey initialization failed", e)
         }
     }
 
@@ -88,7 +87,7 @@ class MainGlobalKeyListener(
             provider?.reset()
             registerGlobalHotkeys()
         } catch (e: Exception) {
-            System.err.println("Failed to update hotkey bindings: ${e.message}")
+            logger?.error("Failed to update hotkey bindings", e)
         }
     }
 
@@ -128,7 +127,7 @@ class MainGlobalKeyListener(
         if (!initialized.get()) return false
         if (isNativeHookAlive() && isProviderAlive()) return true
 
-        System.err.println("[Hotkeys] Hotkey system appears dead, attempting re-initialization...")
+        logger?.warn("[Hotkeys] Hotkey system appears dead, attempting re-initialization...")
         try {
             // Clean up dead components
             try {
@@ -142,10 +141,10 @@ class MainGlobalKeyListener(
             // Re-initialize everything
             initJKeyMaster()
             initJNativeHook()
-            println("[Hotkeys] Hotkey system re-initialized successfully")
+            logger?.info("[Hotkeys] Hotkey system re-initialized successfully")
             return true
         } catch (e: Exception) {
-            System.err.println("[Hotkeys] Re-initialization failed: ${e.message}")
+            logger?.error("[Hotkeys] Re-initialization failed", e)
             return false
         }
     }
@@ -169,7 +168,7 @@ class MainGlobalKeyListener(
                 nativeHookRegistered = false
             }
         } catch (e: Exception) {
-            System.err.println("Hotkey manager shutdown error: ${e.message}")
+            logger?.error("Hotkey manager shutdown error", e)
         } finally {
             initialized.set(false)
         }
@@ -202,11 +201,9 @@ class MainGlobalKeyListener(
                         if (!hotkeysEnabled.get()) return@register
                         dispatchAction(action)
                     }
-                    println("[Hotkeys] Registered GLOBAL ${action.name}: $keyStroke")
+                    logger?.debug("[Hotkeys] Registered GLOBAL ${action.name}: $keyStroke")
                 }.onFailure { ex ->
-                    System.err.println(
-                        "[Hotkeys] Failed to register GLOBAL ${action.name} ($keyStroke): ${ex.message}"
-                    )
+                    logger?.warn("[Hotkeys] Failed to register GLOBAL ${action.name} ($keyStroke): ${ex.message}")
                 }
             }
     }
@@ -243,12 +240,12 @@ class MainGlobalKeyListener(
 
     private fun enableHotkeys() {
         try { provider?.reset(); registerGlobalHotkeys() }
-        catch (e: Exception) { System.err.println("Enable hotkeys failed: ${e.message}") }
+        catch (e: Exception) { logger?.error("Enable hotkeys failed", e) }
     }
 
     private fun disableHotkeys() {
         try { provider?.reset() }
-        catch (e: Exception) { System.err.println("Disable hotkeys failed: ${e.message}") }
+        catch (e: Exception) { logger?.error("Disable hotkeys failed", e) }
     }
 
     private fun initJNativeHook() {
@@ -277,7 +274,11 @@ class MainGlobalKeyListener(
         private var lastTriggerTime = 0L
         private val threshold = 400
 
-        // --- Verbose logging state ---
+        // --- Sequence tracking state ---
+        // NOTE: `verboseLogging` is a misnomer inherited from when this was purely a
+        // debug aid. It now also gates `keysBetweenCtrl`, i.e. the filter that stops
+        // combinations like Ctrl+Shift from being read as a double tap. It must keep
+        // running regardless of [keyTracing] — only the log output is optional.
         private var verboseLogging = false
         private var verboseUntil = 0L
         private var firstCtrlPressTime = 0L
@@ -353,8 +354,18 @@ class MainGlobalKeyListener(
             else -> "VK_0x${code.toString(16).uppercase()}"
         }
 
+        /** Verdicts and counters — no key identities, safe to always record. */
         private fun log(msg: String) {
-            logger?.debug(msg) ?: println(msg)
+            logger?.debug(msg)
+        }
+
+        /**
+         * Names of individual keystrokes. Recorded only when key tracing is on,
+         * because within a second of any Ctrl press this would capture whatever
+         * the user typed — including into password fields.
+         */
+        private fun keyLog(msg: String) {
+            if (keyTracing) logger?.debug(msg)
         }
 
         private fun startVerboseMode() {
@@ -366,12 +377,12 @@ class MainGlobalKeyListener(
             ctrlPressCount = 0
             ctrlReleaseCount = 0
             lastEventTime = firstCtrlPressTime
-            log("[DoubleCtrl] === Ctrl pressed — verbose logging ON for 1s ===")
+            keyLog("[DoubleCtrl] === Ctrl pressed — tracing ON for 1s ===")
         }
 
         private fun stopVerboseMode() {
             verboseLogging = false
-            log("[DoubleCtrl] === Verbose logging OFF (1s expired) ===")
+            keyLog("[DoubleCtrl] === Tracing OFF (1s expired) ===")
         }
 
         private fun logKeyEvent(type: String, code: Int) {
@@ -384,21 +395,30 @@ class MainGlobalKeyListener(
             val gap = now - lastEventTime
             val elapsed = now - firstCtrlPressTime
             val tag = if (code != NativeKeyEvent.VC_CONTROL) " [BETWEEN]" else ""
-            log("[KeyLog] t+${elapsed}ms $type ${keyName(code)}(0x${code.toString(16)}) gap=${gap}ms$tag")
+            keyLog("[KeyLog] t+${elapsed}ms $type ${keyName(code)}(0x${code.toString(16)}) gap=${gap}ms$tag")
             lastEventTime = now
         }
 
+        /**
+         * Records how a sequence ended. A TRIGGER is always logged — it is rare and
+         * it is the event worth explaining. Everything else would fire on every
+         * Ctrl+C, so it stays behind [keyTracing].
+         */
         private fun endSequence(cause: String, verdict: String) {
-            val elapsed = System.currentTimeMillis() - firstCtrlPressTime
-            val summary = buildString {
-                append("[DoubleCtrl] === Sequence end: ")
-                append("t=${elapsed}ms | ")
-                append("ctrlPressed=$ctrlPressCount ctrlReleased=$ctrlReleaseCount | ")
-                append("keysBetween=${keysBetweenCtrl.size} (${keysBetweenCtrl.joinToString()}) | ")
-                if (filterSkips.isNotEmpty()) append("filterSkips=[${filterSkips.joinToString("; ")}] | ")
-                append("cause=$cause → $verdict ===")
+            if (keyTracing || verdict == "TRIGGER") {
+                val elapsed = System.currentTimeMillis() - firstCtrlPressTime
+                val keys = if (keyTracing) " (${keysBetweenCtrl.joinToString()})" else ""
+                log(
+                    buildString {
+                        append("[DoubleCtrl] === Sequence end: ")
+                        append("t=${elapsed}ms | ")
+                        append("ctrlPressed=$ctrlPressCount ctrlReleased=$ctrlReleaseCount | ")
+                        append("keysBetween=${keysBetweenCtrl.size}$keys | ")
+                        if (filterSkips.isNotEmpty()) append("filterSkips=[${filterSkips.joinToString("; ")}] | ")
+                        append("cause=$cause → $verdict ===")
+                    }
+                )
             }
-            log(summary)
             verboseLogging = false
             keysBetweenCtrl.clear()
         }
@@ -408,7 +428,7 @@ class MainGlobalKeyListener(
             val now = System.currentTimeMillis()
             if (now > verboseUntil) return
             val elapsed = now - firstCtrlPressTime
-            log("[KeyLog] t+${elapsed}ms released ${keyName(code)}(0x${code.toString(16)}) [BETWEEN-RELEASE]")
+            keyLog("[KeyLog] t+${elapsed}ms released ${keyName(code)}(0x${code.toString(16)}) [BETWEEN-RELEASE]")
         }
 
         override fun nativeKeyPressed(e: NativeKeyEvent) {
@@ -424,7 +444,7 @@ class MainGlobalKeyListener(
 
             if (verboseLogging && e.keyCode == NativeKeyEvent.VC_CONTROL) {
                 ctrlPressCount++
-                log("[Filter] Ctrl press #$ctrlPressCount")
+                keyLog("[Filter] Ctrl press #$ctrlPressCount")
             }
 
             if (verboseLogging && e.keyCode != NativeKeyEvent.VC_CONTROL) {
@@ -444,7 +464,7 @@ class MainGlobalKeyListener(
 
             if (verboseLogging && e.keyCode == NativeKeyEvent.VC_CONTROL) {
                 ctrlReleaseCount++
-                log("[Filter] Ctrl release #$ctrlReleaseCount")
+                keyLog("[Filter] Ctrl release #$ctrlReleaseCount")
             }
 
             if (!hotkeysEnabled.get()) {
@@ -477,7 +497,8 @@ class MainGlobalKeyListener(
             }
             // If other keys were pressed between Ctrl releases — log and skip
             if (keysBetweenCtrl.isNotEmpty()) {
-                endSequence("other key(s) between: ${keysBetweenCtrl.joinToString()}", "SKIP")
+                val which = if (keyTracing) ": ${keysBetweenCtrl.joinToString()}" else ""
+                endSequence("other key(s) between$which", "SKIP")
                 lastCtrlTime = now
                 return
             }
@@ -602,6 +623,19 @@ class MainGlobalKeyListener(
     }
 
     private companion object {
+        /**
+         * System property enabling per-keystroke tracing: `-Dqtranslate.keytrace=true`.
+         *
+         * Off by default on purpose. When on, every key pressed within a second of a
+         * Ctrl press is written to the log by name, which is exactly what a keylogger
+         * does — useful for diagnosing false double-Ctrl triggers, unacceptable as a
+         * default. Turning it off never changes which sequences trigger, only what
+         * gets recorded.
+         */
+        const val KEY_TRACE_PROPERTY = "qtranslate.keytrace"
+
+        val keyTracing: Boolean = System.getProperty(KEY_TRACE_PROPERTY).toBoolean()
+
         /** How many times to retry the copy before deciding nothing is selected. */
         const val COPY_ATTEMPTS = 2
 

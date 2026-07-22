@@ -123,7 +123,8 @@ class MainAppFrame(
                     SettingsIntent.ToggleSetting { it.copy(popupLastKnownSize = size) }
                 )
             },
-            onPinToggled = { mainStore.dispatch(MainIntent.ToggleQuickTranslateDialogPin) }
+            onPinToggled = { mainStore.dispatch(MainIntent.ToggleQuickTranslateDialogPin) },
+            logger = logger
         )
     }
 

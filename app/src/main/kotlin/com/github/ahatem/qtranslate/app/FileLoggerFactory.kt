@@ -7,41 +7,124 @@ import java.io.File
 import java.io.FileWriter
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
-import java.util.concurrent.locks.ReentrantLock
-import kotlin.concurrent.withLock
+import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * A [LoggerFactory] that writes to both stdout (coloured) and a rotating log file.
  *
  * The file lives at `[logDir]/qtranslate-app.log` and rotates daily.
  * Old files are kept for 14 days.
+ *
+ * ### Why writing is asynchronous
+ * Callers only format the line and hand it to a queue; a dedicated daemon thread
+ * does the actual I/O. This matters because the global key hook logs from
+ * JNativeHook's dispatch thread: Windows silently unregisters a low-level
+ * keyboard hook whose handler exceeds `LowLevelHooksTimeout` (~300 ms), so a
+ * blocking `flush()` per keystroke could disable the app's own hotkeys.
+ *
+ * If the queue fills up (disk stalled) lines are dropped rather than blocking
+ * the caller; the number of dropped lines is reported once the writer catches up.
  */
 class FileLoggerFactory(
     private val logDir: File,
     private val minLogLevel: LogLevel = LogLevel.DEBUG
 ) : LoggerFactory {
 
-    enum class LogLevel(val priority: Int, val ansiCode: String) {
-        DEBUG(0, "\u001B[34m"),
-        INFO(1, "\u001B[32m"),
-        WARN(2, "\u001B[33m"),
-        ERROR(3, "\u001B[31m")
+    enum class LogLevel(val priority: Int, private val colour: Int) {
+        DEBUG(0, 34),
+        INFO(1, 32),
+        WARN(2, 33),
+        ERROR(3, 31);
+
+        /** SGR sequence tinting the level tag on a colour-capable console. */
+        val ansiCode: String get() = "$ESC[${colour}m"
     }
 
-    private val lock = ReentrantLock()
-    private var currentWriter: BufferedWriter? = null
+    /** One formatted record, ready to be written verbatim. */
+    private class Record(val console: String, val file: String)
+
+    private val queue = ArrayBlockingQueue<Record>(QUEUE_CAPACITY)
+    private val droppedRecords = AtomicLong()
+    private val running = AtomicBoolean(true)
+
+    @Volatile private var currentWriter: BufferedWriter? = null
     private var currentFileDate: String = ""
 
     private val fileTimeFmt: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS")
     private val fileDateFmt: DateTimeFormatter = DateTimeFormatter.ofPattern("yyyy-MM-dd")
     private val consoleTimeFmt: DateTimeFormatter = DateTimeFormatter.ofPattern("HH:mm:ss.SSS")
 
+    private val writerThread: Thread
+
     init {
         logDir.mkdirs()
+        writerThread = Thread(::drainLoop, "FileLogger").apply {
+            isDaemon = true
+            priority = Thread.MIN_PRIORITY
+            start()
+        }
     }
 
     override fun getLogger(name: String): Logger =
         CompositeLogger(name, minLogLevel)
+
+    /**
+     * Hands a record to the writer thread. Never blocks: if the queue is full the
+     * record is dropped and counted.
+     */
+    private fun enqueue(record: Record) {
+        if (!queue.offer(record)) droppedRecords.incrementAndGet()
+    }
+
+    fun close() {
+        if (!running.compareAndSet(true, false)) return
+        // Do not interrupt: let the loop notice `running` and drain what is queued.
+        runCatching { writerThread.join(CLOSE_TIMEOUT_MS) }
+        runCatching { currentWriter?.close() }
+        currentWriter = null
+    }
+
+    // ---------------------------------------------------------------- writer
+
+    private fun drainLoop() {
+        while (running.get() || queue.isNotEmpty()) {
+            val first = queue.poll(POLL_TIMEOUT_MS, TimeUnit.MILLISECONDS) ?: continue
+            write(first)
+            // Batch whatever else has piled up, then flush once for the whole batch.
+            while (true) write(queue.poll() ?: break)
+            reportDrops()
+            runCatching { currentWriter?.flush() }
+        }
+        runCatching { currentWriter?.flush() }
+    }
+
+    private fun write(record: Record) {
+        runCatching { println(record.console) }
+        runCatching {
+            rotateIfNeeded()
+            currentWriter?.apply {
+                write(record.file)
+                newLine()
+            }
+        }
+    }
+
+    private fun reportDrops() {
+        val dropped = droppedRecords.getAndSet(0)
+        if (dropped == 0L) return
+        val ts = LocalDateTime.now()
+        write(
+            Record(
+                console = "[${ts.format(consoleTimeFmt)}] [FileLogger] ${LogLevel.WARN.ansiCode}[WARN]001B[0m " +
+                    "[FileLogger] dropped $dropped log records — writer could not keep up",
+                file = "${ts.format(fileTimeFmt)} [FileLogger] WARN FileLogger - " +
+                    "dropped $dropped log records — writer could not keep up"
+            )
+        )
+    }
 
     private fun currentDate(): String = LocalDateTime.now().format(fileDateFmt)
 
@@ -75,25 +158,7 @@ class FileLoggerFactory(
         currentWriter = BufferedWriter(FileWriter(targetFile, true), 8192)
     }
 
-    private fun writeToFile(line: String) {
-        lock.withLock {
-            runCatching {
-                rotateIfNeeded()
-                currentWriter?.apply {
-                    write(line)
-                    newLine()
-                    flush()
-                }
-            }
-        }
-    }
-
-    fun close() {
-        lock.withLock {
-            runCatching { currentWriter?.close() }
-            currentWriter = null
-        }
-    }
+    // ---------------------------------------------------------------- logger
 
     private inner class CompositeLogger(
         private val name: String,
@@ -103,32 +168,42 @@ class FileLoggerFactory(
         private fun emit(level: LogLevel, message: String, error: Throwable? = null) {
             if (level.priority < minLevel.priority) return
 
-            val ts = LocalDateTime.now()
-
-            // Console (coloured)
-            synchronized(System.out) {
-                val consoleTs = ts.format(consoleTimeFmt)
-                val thread = Thread.currentThread().name
-                val tag = "${level.ansiCode}[${level.name}]\u001B[0m"
-                println("[$consoleTs] [$thread] $tag [$name] $message")
-                error?.printStackTrace(System.out)
-            }
-
-            // File (plain text)
-            val fileTs = ts.format(fileTimeFmt)
+            val ts     = LocalDateTime.now()
             val thread = Thread.currentThread().name
-            val fileLine = "$fileTs [$thread] ${level.name} $name - $message"
-            writeToFile(fileLine)
-            if (error != null) {
-                val sw = java.io.StringWriter()
-                error.printStackTrace(java.io.PrintWriter(sw))
-                writeToFile("$fileTs [$thread] ${level.name} $name - $sw")
+            val stack  = error?.let { t ->
+                java.io.StringWriter().also { sw -> t.printStackTrace(java.io.PrintWriter(sw)) }.toString()
             }
+
+            val body = if (stack == null) message else "$message\n$stack"
+            enqueue(
+                Record(
+                    console = "[${ts.format(consoleTimeFmt)}] [$thread] " +
+                        "${level.ansiCode}[${level.name}]001B[0m [$name] $body",
+                    file = "${ts.format(fileTimeFmt)} [$thread] ${level.name} $name - $body"
+                )
+            )
         }
 
         override fun debug(message: String)                    = emit(LogLevel.DEBUG, message)
         override fun info(message: String)                     = emit(LogLevel.INFO, message)
         override fun warn(message: String)                     = emit(LogLevel.WARN, message)
         override fun error(message: String, error: Throwable?) = emit(LogLevel.ERROR, message, error)
+    }
+
+    private companion object {
+        /** ASCII escape, written as a code point so no control byte lives in the source. */
+        val ESC: Char = Char(27)
+
+        /** SGR reset sequence. */
+        val RESET: String = "$ESC[0m"
+
+        /** Records buffered before the writer starts dropping them. */
+        const val QUEUE_CAPACITY = 8192
+
+        /** How long the writer waits for a record before re-checking [running]. */
+        const val POLL_TIMEOUT_MS = 200L
+
+        /** How long [close] waits for the writer to drain. */
+        const val CLOSE_TIMEOUT_MS = 2000L
     }
 }
