@@ -80,3 +80,10 @@ local.properties
 
 old-core/.claude/
 launcher.ps1
+
+# Packaged release output (jars/zips already ignored above, this catches the rest)
+release/
+
+# Scratch scripts and third-party tool state
+consolidate_temp.py
+.mimocode/
