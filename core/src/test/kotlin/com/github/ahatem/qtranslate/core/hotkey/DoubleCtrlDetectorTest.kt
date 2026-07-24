@@ -99,4 +99,113 @@ class DoubleCtrlDetectorTest {
         assertEquals(DoubleCtrlDetector.Result.TRIGGERED, detector.onCtrlReleased(1200))  // tap 2: trigger
         assertEquals(DoubleCtrlDetector.Result.COOLDOWN_ACTIVE, detector.onCtrlReleased(1300))  // tap 3: cooldown
     }
+
+    // --- Contamination: the behaviour the old filter got wrong ---
+    // Arbitrary non-Ctrl key codes; the detector treats them as opaque set members.
+
+    private val SHIFT = 1
+    private val WIN = 2
+    private val C = 3
+    private val PRINT_SCREEN = 4
+
+    @Test
+    fun ctrlPlusCIsNotATap() {
+        val detector = DoubleCtrlDetector()
+        // Ctrl down, C down, C up, Ctrl up — a copy shortcut.
+        detector.onCtrlPressed(990)
+        detector.onOtherKeyDown(C, 995)
+        detector.onOtherKeyUp(C)
+        assertEquals(DoubleCtrlDetector.Result.CONTAMINATED, detector.onCtrlReleased(1000))
+    }
+
+    @Test
+    fun shiftHeldFirstThenCtrlIsNotATap() {
+        val detector = DoubleCtrlDetector()
+        // Layout switch: Shift is already held when Ctrl is tapped, twice.
+        detector.onOtherKeyDown(SHIFT, 900)
+        detector.onCtrlPressed(950)
+        assertEquals(DoubleCtrlDetector.Result.CONTAMINATED, detector.onCtrlReleased(1000))
+        detector.onCtrlPressed(1100)
+        assertEquals(DoubleCtrlDetector.Result.CONTAMINATED, detector.onCtrlReleased(1150))
+    }
+
+    @Test
+    fun comboDoesNotArmALaterLoneCtrl() {
+        val detector = DoubleCtrlDetector()
+        // Ctrl+C, then a single clean Ctrl tap soon after must NOT trigger:
+        // the combo must not count as the first tap of a double.
+        detector.onCtrlPressed(990)
+        detector.onOtherKeyDown(C, 995)
+        detector.onOtherKeyUp(C)
+        assertEquals(DoubleCtrlDetector.Result.CONTAMINATED, detector.onCtrlReleased(1000))
+        detector.onCtrlPressed(1050)
+        assertEquals(DoubleCtrlDetector.Result.WAITING, detector.onCtrlReleased(1100))
+    }
+
+    @Test
+    fun keyBetweenTapsBreaksTheDouble() {
+        val detector = DoubleCtrlDetector()
+        detector.onCtrlPressed(990)
+        assertEquals(DoubleCtrlDetector.Result.WAITING, detector.onCtrlReleased(1000))  // clean first tap
+        detector.onOtherKeyDown(C, 1050)                                                // something in between
+        detector.onOtherKeyUp(C)
+        detector.onCtrlPressed(1100)
+        // Second tap is clean in itself, but the window was contaminated → restart.
+        assertEquals(DoubleCtrlDetector.Result.WAITING, detector.onCtrlReleased(1150))
+    }
+
+    @Test
+    fun autorepeatWinDoesNotLeakAndBlockLaterDoubleTap() {
+        val detector = DoubleCtrlDetector()
+        // Ctrl held, Win auto-repeats 20 down events, single up. A counter would
+        // leak +19 and wedge the detector; a map keyed by code must not.
+        detector.onCtrlPressed(990)
+        repeat(20) { detector.onOtherKeyDown(WIN, 995) }
+        detector.onOtherKeyUp(WIN)
+        assertEquals(DoubleCtrlDetector.Result.CONTAMINATED, detector.onCtrlReleased(1000))
+
+        // Later, a genuine clean double tap still works.
+        detector.onCtrlPressed(2990)
+        assertEquals(DoubleCtrlDetector.Result.WAITING, detector.onCtrlReleased(3000))
+        detector.onCtrlPressed(3190)
+        assertEquals(DoubleCtrlDetector.Result.TRIGGERED, detector.onCtrlReleased(3200))
+    }
+
+    @Test
+    fun swallowedPressStillContaminatesViaRelease() {
+        val detector = DoubleCtrlDetector()
+        // PrintScreen commonly delivers only a release. It must still poison the tap.
+        detector.onCtrlPressed(990)
+        detector.onOtherKeyUp(PRINT_SCREEN)   // release with no matching press
+        assertEquals(DoubleCtrlDetector.Result.CONTAMINATED, detector.onCtrlReleased(1000))
+    }
+
+    @Test
+    fun cleanDoubleTapWithExplicitPressEvents() {
+        val detector = DoubleCtrlDetector()
+        detector.onCtrlPressed(990)
+        assertEquals(DoubleCtrlDetector.Result.WAITING, detector.onCtrlReleased(1000))
+        detector.onCtrlPressed(1240)
+        assertEquals(DoubleCtrlDetector.Result.TRIGGERED, detector.onCtrlReleased(1250))
+    }
+
+    @Test
+    fun leakedKeyWithSwallowedReleaseStopsBlockingAfterTimeout() {
+        val detector = DoubleCtrlDetector()
+        val f6 = 6
+
+        // F6 pressed in a game; its release is swallowed, so it never comes.
+        detector.onOtherKeyDown(f6, 1000)
+
+        // Right away, F6 is genuinely "held" → Ctrl taps are contaminated.
+        detector.onCtrlPressed(1100)
+        assertEquals(DoubleCtrlDetector.Result.CONTAMINATED, detector.onCtrlReleased(1150))
+
+        // More than five seconds later, the phantom hold is treated as leaked and
+        // ignored, so double-tap works again without ever seeing an F6 release.
+        detector.onCtrlPressed(7000)
+        assertEquals(DoubleCtrlDetector.Result.WAITING, detector.onCtrlReleased(7000))
+        detector.onCtrlPressed(7250)
+        assertEquals(DoubleCtrlDetector.Result.TRIGGERED, detector.onCtrlReleased(7300))
+    }
 }

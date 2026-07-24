@@ -1,5 +1,6 @@
 package com.github.ahatem.qtranslate.ui.swing.main
 
+import com.github.ahatem.qtranslate.core.hotkey.DoubleCtrlDetector
 import com.github.ahatem.qtranslate.core.settings.data.HotkeyAction
 import com.github.ahatem.qtranslate.core.settings.data.HotkeyBinding
 import com.github.ahatem.qtranslate.core.settings.data.HotkeyScope
@@ -55,6 +56,9 @@ class MainGlobalKeyListener(
 
     private var provider: Provider? = null
     private var nativeHookRegistered = false
+    // Pure state machine that decides double-Ctrl. Accessed only from the hook's
+    // dispatch thread (all four entry points are called from CustomSequenceListener).
+    private val doubleCtrl = DoubleCtrlDetector()
     private val sequenceListener = CustomSequenceListener()
     private val clipboardLock = AtomicBoolean(false)
     private val hotkeysEnabled = AtomicBoolean(true)
@@ -137,6 +141,10 @@ class MainGlobalKeyListener(
                     nativeHookRegistered = false
                 }
             } catch (_: Exception) { }
+
+            // A dead hook may have missed key-up events; start from a clean slate
+            // so no phantom "held" key blocks the gesture after recovery.
+            doubleCtrl.reset()
 
             // Re-initialize everything
             initJKeyMaster()
@@ -270,23 +278,19 @@ class MainGlobalKeyListener(
      *    (Hoyeun's request — user can disable it from the keyboard panel)
      */
     private inner class CustomSequenceListener : NativeKeyListener {
-        private var lastCtrlTime = 0L
-        private var lastTriggerTime = 0L
-        private val threshold = 400
 
-        // --- Sequence tracking state ---
-        // NOTE: `verboseLogging` is a misnomer inherited from when this was purely a
-        // debug aid. It now also gates `keysBetweenCtrl`, i.e. the filter that stops
-        // combinations like Ctrl+Shift from being read as a double tap. It must keep
-        // running regardless of [keyTracing] — only the log output is optional.
-        private var verboseLogging = false
-        private var verboseUntil = 0L
-        private var firstCtrlPressTime = 0L
-        private val keysBetweenCtrl = mutableListOf<String>()
-        private var lastEventTime = 0L
-        private var ctrlPressCount = 0
-        private var ctrlReleaseCount = 0
-        private var filterSkips = mutableListOf<String>()
+        // --- Key tracing (diagnostic only, gated by [keyTracing]) ---
+        // A 1-second window opens on a Ctrl or Shift press and records every key in
+        // it, prefixed by a snapshot of what was ALREADY held when it opened. That
+        // snapshot is what reveals "Shift was down before Ctrl" — the shape of a
+        // false trigger — and a key stuck in it flags a leak after long uptime.
+        // None of this affects the decision, which lives entirely in [doubleCtrl].
+        // Caveat: while the flag is on, ordinary typing keeps re-opening the window
+        // via Shift, so the trace WILL contain typed text. Diagnostic use only.
+        private var traceOpenUntil = 0L
+        private var traceWindowStart = 0L
+        private var lastTraceTime = 0L
+        private val tracedHeld = HashSet<Int>()   // physically-held keys, for the snapshot
 
         private fun keyName(code: Int): String = when (code) {
             NativeKeyEvent.VC_CONTROL -> "VK_CONTROL"
@@ -354,163 +358,87 @@ class MainGlobalKeyListener(
             else -> "VK_0x${code.toString(16).uppercase()}"
         }
 
-        /** Verdicts and counters — no key identities, safe to always record. */
-        private fun log(msg: String) {
-            logger?.debug(msg)
-        }
+        private fun isTraceOpener(code: Int): Boolean =
+            code == NativeKeyEvent.VC_CONTROL || code == NativeKeyEvent.VC_SHIFT
 
         /**
-         * Names of individual keystrokes. Recorded only when key tracing is on,
-         * because within a second of any Ctrl press this would capture whatever
-         * the user typed — including into password fields.
+         * Opens — or extends — the 1s trace window on a Ctrl/Shift press, logging a
+         * snapshot of the keys already held at that moment. Call before adding the
+         * current key to [tracedHeld] so the snapshot reflects the prior state.
          */
-        private fun keyLog(msg: String) {
-            if (keyTracing) logger?.debug(msg)
-        }
-
-        private fun startVerboseMode() {
-            verboseLogging = true
-            verboseUntil = System.currentTimeMillis() + 1000
-            firstCtrlPressTime = System.currentTimeMillis()
-            keysBetweenCtrl.clear()
-            filterSkips.clear()
-            ctrlPressCount = 0
-            ctrlReleaseCount = 0
-            lastEventTime = firstCtrlPressTime
-            keyLog("[DoubleCtrl] === Ctrl pressed — tracing ON for 1s ===")
-        }
-
-        private fun stopVerboseMode() {
-            verboseLogging = false
-            keyLog("[DoubleCtrl] === Tracing OFF (1s expired) ===")
-        }
-
-        private fun logKeyEvent(type: String, code: Int) {
-            if (!verboseLogging) return
-            val now = System.currentTimeMillis()
-            if (now > verboseUntil) {
-                stopVerboseMode()
-                return
+        private fun openTraceWindow(code: Int, now: Long) {
+            if (!keyTracing || !isTraceOpener(code)) return
+            val alreadyOpen = now <= traceOpenUntil
+            traceOpenUntil = now + TRACE_WINDOW_MS
+            if (!alreadyOpen) {
+                traceWindowStart = now
+                lastTraceTime = now
+                val held = tracedHeld.joinToString { keyName(it) }.ifEmpty { "none" }
+                logger?.debug("[KeyLog] === window opened by ${keyName(code)}; already-held=[$held] ===")
             }
-            val gap = now - lastEventTime
-            val elapsed = now - firstCtrlPressTime
-            val tag = if (code != NativeKeyEvent.VC_CONTROL) " [BETWEEN]" else ""
-            keyLog("[KeyLog] t+${elapsed}ms $type ${keyName(code)}(0x${code.toString(16)}) gap=${gap}ms$tag")
-            lastEventTime = now
         }
 
-        /**
-         * Records how a sequence ended. A TRIGGER is always logged — it is rare and
-         * it is the event worth explaining. Everything else would fire on every
-         * Ctrl+C, so it stays behind [keyTracing].
-         */
-        private fun endSequence(cause: String, verdict: String) {
-            if (keyTracing || verdict == "TRIGGER") {
-                val elapsed = System.currentTimeMillis() - firstCtrlPressTime
-                val keys = if (keyTracing) " (${keysBetweenCtrl.joinToString()})" else ""
-                log(
-                    buildString {
-                        append("[DoubleCtrl] === Sequence end: ")
-                        append("t=${elapsed}ms | ")
-                        append("ctrlPressed=$ctrlPressCount ctrlReleased=$ctrlReleaseCount | ")
-                        append("keysBetween=${keysBetweenCtrl.size}$keys | ")
-                        if (filterSkips.isNotEmpty()) append("filterSkips=[${filterSkips.joinToString("; ")}] | ")
-                        append("cause=$cause → $verdict ===")
-                    }
-                )
+        /** Logs one key event if the trace window is currently open. */
+        private fun traceEvent(type: String, code: Int, now: Long) {
+            if (!keyTracing || now > traceOpenUntil) return
+            val elapsed = now - traceWindowStart
+            val gap = now - lastTraceTime
+            lastTraceTime = now
+            logger?.debug("[KeyLog] t+${elapsed}ms $type ${keyName(code)}(0x${code.toString(16)}) gap=${gap}ms")
+        }
+
+        /** A verdict is logged always for TRIGGERED, otherwise only when tracing. */
+        private fun logVerdict(result: DoubleCtrlDetector.Result, acted: Boolean) {
+            if (keyTracing || result == DoubleCtrlDetector.Result.TRIGGERED) {
+                val suffix = if (result == DoubleCtrlDetector.Result.TRIGGERED && !acted) " (suppressed)" else ""
+                logger?.debug("[DoubleCtrl] $result$suffix")
             }
-            verboseLogging = false
-            keysBetweenCtrl.clear()
-        }
-
-        private fun logNonCtrlRelease(code: Int) {
-            if (!verboseLogging) return
-            val now = System.currentTimeMillis()
-            if (now > verboseUntil) return
-            val elapsed = now - firstCtrlPressTime
-            keyLog("[KeyLog] t+${elapsed}ms released ${keyName(code)}(0x${code.toString(16)}) [BETWEEN-RELEASE]")
         }
 
         override fun nativeKeyPressed(e: NativeKeyEvent) {
             // Our own Robot-injected Ctrl+C — not a user keystroke.
             if (syntheticInput.get()) return
+            val now = System.currentTimeMillis()
 
-            // Start verbose logging on first Ctrl press
-            if (e.keyCode == NativeKeyEvent.VC_CONTROL && !verboseLogging) {
-                startVerboseMode()
-            }
+            if (e.keyCode == NativeKeyEvent.VC_CONTROL) doubleCtrl.onCtrlPressed(now)
+            else doubleCtrl.onOtherKeyDown(e.keyCode, now)
 
-            logKeyEvent("pressed ", e.keyCode)
-
-            if (verboseLogging && e.keyCode == NativeKeyEvent.VC_CONTROL) {
-                ctrlPressCount++
-                keyLog("[Filter] Ctrl press #$ctrlPressCount")
-            }
-
-            if (verboseLogging && e.keyCode != NativeKeyEvent.VC_CONTROL) {
-                keysBetweenCtrl.add(keyName(e.keyCode))
-            }
+            openTraceWindow(e.keyCode, now)        // snapshot reflects state BEFORE this key
+            traceEvent("pressed ", e.keyCode, now)
+            if (keyTracing) tracedHeld.add(e.keyCode)
         }
 
         override fun nativeKeyReleased(e: NativeKeyEvent) {
             // Our own Robot-injected Ctrl+C — not a user keystroke.
             if (syntheticInput.get()) return
-
-            logKeyEvent("released", e.keyCode)
-
-            if (verboseLogging && e.keyCode != NativeKeyEvent.VC_CONTROL) {
-                logNonCtrlRelease(e.keyCode)
-            }
-
-            if (verboseLogging && e.keyCode == NativeKeyEvent.VC_CONTROL) {
-                ctrlReleaseCount++
-                keyLog("[Filter] Ctrl release #$ctrlReleaseCount")
-            }
-
-            if (!hotkeysEnabled.get()) {
-                if (verboseLogging) filterSkips.add("hotkeys disabled")
-                return
-            }
-            if (e.keyCode != NativeKeyEvent.VC_CONTROL) return
-
-            // Only fire if the binding exists, is enabled, AND the user
-            // has not opted out of the double-Ctrl mechanism specifically.
-            val binding = bindings.find { it.action == HotkeyAction.SHOW_MAIN_WINDOW }
-            if (binding == null || !binding.isEnabled || !binding.isDoubleCtrlEnabled) {
-                if (verboseLogging) filterSkips.add("binding disabled")
-                return
-            }
-
-            val cooldown = binding.doubleCtrlCooldownMs
-            val debounce = binding.doubleCtrlDebounceMs
             val now = System.currentTimeMillis()
 
-            // If within cooldown — log and skip
-            if (now - lastTriggerTime < cooldown) {
-                endSequence("within cooldown (${now - lastTriggerTime}ms < ${cooldown}ms)", "SKIP")
+            traceEvent("released", e.keyCode, now)
+            if (keyTracing) tracedHeld.remove(e.keyCode)
+
+            if (e.keyCode != NativeKeyEvent.VC_CONTROL) {
+                doubleCtrl.onOtherKeyUp(e.keyCode)
                 return
             }
-            // If within debounce — log and skip
-            if (now - lastCtrlTime < debounce) {
-                endSequence("within debounce (${now - lastCtrlTime}ms < ${debounce}ms)", "SKIP")
+
+            // Keep the detector fed with the current sensitivity, then let it decide.
+            // The binding may disable the gesture; we still run the machine so its
+            // state stays consistent, and only gate the resulting action.
+            val binding = bindings.find { it.action == HotkeyAction.SHOW_MAIN_WINDOW }
+            if (binding != null) {
+                doubleCtrl.configure(binding.doubleCtrlDebounceMs, binding.doubleCtrlCooldownMs)
+            }
+
+            val result = doubleCtrl.onCtrlReleased(now)
+            if (result != DoubleCtrlDetector.Result.TRIGGERED) {
+                logVerdict(result, acted = false)
                 return
             }
-            // If other keys were pressed between Ctrl releases — log and skip
-            if (keysBetweenCtrl.isNotEmpty()) {
-                val which = if (keyTracing) ": ${keysBetweenCtrl.joinToString()}" else ""
-                endSequence("other key(s) between$which", "SKIP")
-                lastCtrlTime = now
-                return
-            }
-            // If within threshold — trigger
-            if (now - lastCtrlTime < threshold) {
-                lastTriggerTime = now
-                endSequence("gap=${now - lastCtrlTime}ms within threshold", "TRIGGER")
-                scope.launch { showMainWindow() }
-            } else {
-                endSequence("gap=${now - lastCtrlTime}ms beyond threshold", "SKIP")
-            }
-            lastCtrlTime = now
+
+            val enabled = hotkeysEnabled.get() &&
+                binding != null && binding.isEnabled && binding.isDoubleCtrlEnabled
+            logVerdict(result, acted = enabled)
+            if (enabled) scope.launch { showMainWindow() }
         }
     }
 
@@ -635,6 +563,9 @@ class MainGlobalKeyListener(
         const val KEY_TRACE_PROPERTY = "qtranslate.keytrace"
 
         val keyTracing: Boolean = System.getProperty(KEY_TRACE_PROPERTY).toBoolean()
+
+        /** How long the key-trace window stays open after a Ctrl/Shift press. */
+        const val TRACE_WINDOW_MS = 1000L
 
         /** How many times to retry the copy before deciding nothing is selected. */
         const val COPY_ATTEMPTS = 2

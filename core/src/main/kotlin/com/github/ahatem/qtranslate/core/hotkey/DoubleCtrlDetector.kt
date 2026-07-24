@@ -1,78 +1,171 @@
 package com.github.ahatem.qtranslate.core.hotkey
 
 /**
- * Detects double-tap Ctrl with debounce and cooldown protection.
+ * Decides whether a stream of raw keyboard events is a deliberate **double-tap of
+ * Ctrl** — the gesture that shows the main window.
  *
- * Extracted from [com.github.ahatem.qtranslate.ui.swing.main.MainGlobalKeyListener]
- * for testability. The detector is a pure state machine — no I/O, no threading.
+ * A double tap counts only when Ctrl is tapped twice **cleanly**: no other key
+ * touched while Ctrl was down, and no other key in between the two taps. That is
+ * what separates the gesture from ordinary shortcuts that merely involve Ctrl —
+ * Ctrl+C, Ctrl+Shift (a layout switch), Ctrl+Win, and so on.
+ *
+ * The detector is a pure state machine: no threading, no I/O, no knowledge of the
+ * key-event library. The caller routes events to four entry points and acts on the
+ * [Result] returned by [onCtrlReleased].
+ *
+ * ### Why a set of held keys, not a counter
+ * Auto-repeat sends many key-**down** events for one physically held key but a
+ * single key-**up**. A `+1/-1` counter would leak on every held key and eventually
+ * wedge the detector shut. [heldOtherKeys] stores key codes, so a key repeating 50
+ * times is still one member, cleared by its single release.
  *
  * ### Parameters
- * - **debounce** — releases closer than this (ms) are keyboard chatter, ignored.
- * - **cooldown** — after a successful trigger, suppress new triggers for this long.
- * - **threshold** — maximum gap (ms) between two taps to count as a double-tap.
- *
- * ### State transitions
- * ```
- * IDLE → (release within debounce) → IDLE  (chatter, ignored)
- * IDLE → (release within threshold) → TRIGGERED
- * TRIGGERED → (release within cooldown) → TRIGGERED  (suppressed)
- * TRIGGERED → (release after cooldown) → IDLE  (ready for next double-tap)
- * ```
+ * - **debounce** — two releases closer than this (ms) are keyboard chatter (one
+ *   physical release bouncing); the extra one is ignored.
+ * - **cooldown** — after a trigger, suppress further triggers for this long, so the
+ *   window is not re-shown by a lingering third tap.
+ * - **threshold** — maximum gap (ms) between two clean taps to count as a double.
  */
 class DoubleCtrlDetector(
-    private val debounce: Int = 80,
-    private val cooldown: Int = 1000,
-    private val threshold: Int = 400
+    debounce: Int = 80,
+    cooldown: Int = 1000,
+    threshold: Int = 400
 ) {
-    /**
-     * Result of processing a single Ctrl release event.
-     */
+    /** What a single Ctrl release meant. */
     enum class Result {
-        /** Chatter filtered — release was too close to the previous one. */
+        /** Release too close to the previous one — keyboard bounce. */
         CHATTER_FILTERED,
-        /** Cooldown active — trigger was suppressed. */
+        /** A trigger fired recently; this release is suppressed. */
         COOLDOWN_ACTIVE,
-        /** Double-tap detected — fire the action. */
+        /** Ctrl was combined with another key — a shortcut, not a tap. */
+        CONTAMINATED,
+        /** Clean double tap detected — show the window. */
         TRIGGERED,
-        /** First tap recorded — waiting for the second. */
+        /** First clean tap recorded — waiting for the second. */
         WAITING
     }
 
-    private var lastCtrlTime = 0L
+    private var debounce = debounce
+    private var cooldown = cooldown
+    private var threshold = threshold
+
+    /** Non-Ctrl keys currently held down: key code → press timestamp (ms). */
+    private val heldOtherKeys = HashMap<Int, Long>()
+
+    /** The in-progress Ctrl hold has been combined with another key. */
+    private var pressContaminated = false
+
+    /** Another key has been involved since the first tap of the current window. */
+    private var windowContaminated = false
+
+    /** Timestamp of the last clean Ctrl release (0 = none pending). */
+    private var lastTapTime = 0L
+
+    /** Timestamp of the last successful trigger. */
     private var lastTriggerTime = 0L
 
     /**
-     * Process a Ctrl release event at the given [now] timestamp (ms).
-     * Returns [Result] indicating what happened.
+     * Updates the timing parameters without disturbing the state machine, so
+     * settings changes take effect mid-session. [threshold] has no user setting
+     * and is left untouched.
+     */
+    fun configure(debounceMs: Int, cooldownMs: Int) {
+        debounce = debounceMs
+        cooldown = cooldownMs
+    }
+
+    /** A non-Ctrl key went down at [now]. */
+    fun onOtherKeyDown(keyCode: Int, now: Long) {
+        heldOtherKeys[keyCode] = now
+        contaminate()
+    }
+
+    /**
+     * A non-Ctrl key went up. Contaminates even if we never saw the matching
+     * press (the OS can swallow a press inside a system combo), so a key we only
+     * see released still disqualifies the current window.
+     */
+    fun onOtherKeyUp(keyCode: Int) {
+        heldOtherKeys.remove(keyCode)
+        contaminate()
+    }
+
+    private fun contaminate() {
+        pressContaminated = true
+        windowContaminated = true
+    }
+
+    /**
+     * Ctrl went down at [now]. The tap is born dirty if another key is genuinely
+     * held.
+     *
+     * A key still "held" after [STALE_HOLD_MS] almost certainly leaked — its
+     * release was swallowed, which happens routinely when a full-screen game or
+     * another app grabs the key-up. Such phantom holds are dropped here, so one
+     * lost release cannot mark every future Ctrl tap as a shortcut forever.
+     */
+    fun onCtrlPressed(now: Long) {
+        heldOtherKeys.entries.removeAll { now - it.value > STALE_HOLD_MS }
+        pressContaminated = heldOtherKeys.isNotEmpty()
+    }
+
+    /**
+     * Ctrl went up. Returns what this release means; only [Result.TRIGGERED]
+     * should show the window.
      */
     fun onCtrlReleased(now: Long): Result {
-        // Cooldown: suppress if we triggered recently.
-        // Do NOT update lastCtrlTime — after cooldown expires, the next release
-        // must be a fresh first tap, not a false second tap.
+        val contaminated = pressContaminated
+        pressContaminated = false
+
+        // Cooldown: swallow everything, including a stray third tap after a trigger.
         if (now - lastTriggerTime < cooldown) {
+            lastTapTime = 0L
+            windowContaminated = false
             return Result.COOLDOWN_ACTIVE
         }
 
-        // Chatter: ignore if this release is too close to the previous one.
-        if (now - lastCtrlTime < debounce) {
+        // The Ctrl hold touched another key — this was a shortcut. Cancel any
+        // pending first tap so a later lone Ctrl cannot pair with it.
+        if (contaminated) {
+            lastTapTime = 0L
+            windowContaminated = false
+            return Result.CONTAMINATED
+        }
+
+        // Keyboard bounce: keep the first tap, ignore this duplicate.
+        if (lastTapTime != 0L && now - lastTapTime < debounce) {
             return Result.CHATTER_FILTERED
         }
 
-        // Double-tap check: is this within the threshold of the first tap?
-        if (now - lastCtrlTime < threshold) {
+        // Second clean tap, close enough, with nothing else in between.
+        if (lastTapTime != 0L && !windowContaminated && now - lastTapTime < threshold) {
             lastTriggerTime = now
-            lastCtrlTime = now
+            lastTapTime = 0L
+            windowContaminated = false
             return Result.TRIGGERED
         }
 
-        // First tap — just record the time.
-        lastCtrlTime = now
+        // First clean tap — or a restart after a stale or contaminated window.
+        lastTapTime = now
+        windowContaminated = false
         return Result.WAITING
     }
 
-    /** Reset all state — useful for testing. */
+    /** Clears all state. */
     fun reset() {
-        lastCtrlTime = 0L
+        heldOtherKeys.clear()
+        pressContaminated = false
+        windowContaminated = false
+        lastTapTime = 0L
         lastTriggerTime = 0L
+    }
+
+    private companion object {
+        /**
+         * How long a non-Ctrl key may be "held" before it is treated as a leaked
+         * (swallowed-release) key and ignored. A real key involved in a shortcut is
+         * held far under a second; only a lost release keeps one down for seconds.
+         */
+        const val STALE_HOLD_MS = 5_000L
     }
 }
