@@ -470,6 +470,21 @@ class MainAppFrame(
                 }
         }
 
+        // Global-hotkeys master switch — apply live when it is toggled (e.g. from
+        // the tray checkbox), not only at startup. The bindings observer above only
+        // reacts to the hotkey LIST changing, so without this a toggle of the flag
+        // alone persisted to config but never reached the running listener, leaving
+        // every gesture suppressed until the next restart.
+        appScope.launch(handler) {
+            settingsStore.state
+                .map { it.originalConfiguration.isGlobalHotkeysEnabled }
+                .distinctUntilChanged()
+                .drop(1)
+                .collect { enabled ->
+                    globalKeyListener.setHotkeysEnabled(enabled)
+                }
+        }
+
         // Language / RTL changes — observe originalConfiguration (saved state only).
         appScope.launch(handler) {
             settingsStore.state
