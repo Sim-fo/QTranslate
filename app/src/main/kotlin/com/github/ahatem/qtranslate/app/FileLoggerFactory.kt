@@ -103,12 +103,15 @@ class FileLoggerFactory(
 
     private fun write(record: Record) {
         runCatching { println(record.console) }
-        runCatching {
-            rotateIfNeeded()
-            currentWriter?.apply {
-                write(record.file)
-                newLine()
-            }
+        val writer = ensureWriter() ?: return   // could not open; skip, retry next record
+        try {
+            writer.write(record.file)
+            writer.newLine()
+        } catch (_: Exception) {
+            // The stream broke. Drop it so [ensureWriter] reopens a fresh one next
+            // time instead of silently no-op'ing forever.
+            runCatching { writer.close() }
+            currentWriter = null
         }
     }
 
@@ -118,7 +121,7 @@ class FileLoggerFactory(
         val ts = LocalDateTime.now()
         write(
             Record(
-                console = "[${ts.format(consoleTimeFmt)}] [FileLogger] ${LogLevel.WARN.ansiCode}[WARN]001B[0m " +
+                console = "[${ts.format(consoleTimeFmt)}] [FileLogger] ${LogLevel.WARN.ansiCode}[WARN]$RESET " +
                     "[FileLogger] dropped $dropped log records — writer could not keep up",
                 file = "${ts.format(fileTimeFmt)} [FileLogger] WARN FileLogger - " +
                     "dropped $dropped log records — writer could not keep up"
@@ -128,13 +131,46 @@ class FileLoggerFactory(
 
     private fun currentDate(): String = LocalDateTime.now().format(fileDateFmt)
 
-    private fun rotateIfNeeded() {
+    /**
+     * Returns an open writer for today's file, rotating at a date change and
+     * reopening if a previous write broke the stream. Returns null if the file
+     * cannot be opened right now — the caller skips that record and retries later.
+     *
+     * Crucially, [currentFileDate] is only advanced **after** a writer is
+     * successfully open. An earlier version set it first, so a single failed
+     * reopen (e.g. a transient lock at the midnight rotation) wedged logging
+     * permanently: the date already matched, so every later call early-returned
+     * onto a dead writer.
+     */
+    private fun ensureWriter(): BufferedWriter? {
         val today = currentDate()
-        if (today == currentFileDate && currentWriter != null) return
+        if (currentWriter != null && today == currentFileDate) return currentWriter
 
+        // No writer yet, the date rolled over, or a prior write broke the stream.
         runCatching { currentWriter?.close() }
+        currentWriter = null
 
-        // Clean up old log files
+        val targetFile = File(logDir, "qtranslate-app.log")
+
+        // On a genuine date rollover (not first open, not a mid-day reopen),
+        // archive the finished day's file and prune old archives.
+        if (currentFileDate.isNotEmpty() && today != currentFileDate) {
+            if (targetFile.exists()) {
+                runCatching {
+                    targetFile.renameTo(File(logDir, "qtranslate-app-${currentFileDate}.log"))
+                }
+            }
+            pruneOldLogs()
+        }
+
+        val opened = runCatching { BufferedWriter(FileWriter(targetFile, true), 8192) }.getOrNull()
+        if (opened != null) currentFileDate = today
+        currentWriter = opened
+        return opened
+    }
+
+    /** Deletes archived logs older than 14 days. */
+    private fun pruneOldLogs() {
         runCatching {
             logDir.listFiles()?.forEach { f ->
                 if (f.name.startsWith("qtranslate-app") && f.name.endsWith(".log") && f.name != "qtranslate-app.log") {
@@ -147,15 +183,6 @@ class FileLoggerFactory(
                 }
             }
         }
-
-        val targetFile = File(logDir, "qtranslate-app.log")
-        if (today != currentFileDate && targetFile.exists()) {
-            val archiveFile = File(logDir, "qtranslate-app-${currentFileDate}.log")
-            runCatching { targetFile.renameTo(archiveFile) }
-        }
-
-        currentFileDate = today
-        currentWriter = BufferedWriter(FileWriter(targetFile, true), 8192)
     }
 
     // ---------------------------------------------------------------- logger
