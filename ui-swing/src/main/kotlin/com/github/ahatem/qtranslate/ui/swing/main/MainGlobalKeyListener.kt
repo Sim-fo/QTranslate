@@ -393,12 +393,32 @@ class MainGlobalKeyListener(
             logger?.debug("[KeyLog] t+${elapsed}ms $type ${keyName(code)}(0x${code.toString(16)}) gap=${gap}ms")
         }
 
-        /** A verdict is logged always for TRIGGERED, otherwise only when tracing. */
+        /**
+         * Logs a verdict. TRIGGERED and UNPAIRED_RELEASE are always recorded — they
+         * are rare, they carry no key identities, and together they are enough to
+         * explain a window that opened by itself: whether a trigger happened at all,
+         * and whether press-less releases are being rejected. The routine verdicts
+         * (CONTAMINATED on every Ctrl+C, WAITING on every lone Ctrl) would swamp the
+         * log, so they stay behind [keyTracing].
+         *
+         * The gap and held-key count are numbers, not keystrokes: a machine-regular
+         * gap or a non-zero hold count is what distinguishes a synthetic trigger
+         * from a deliberate one.
+         */
         private fun logVerdict(result: DoubleCtrlDetector.Result, acted: Boolean) {
-            if (keyTracing || result == DoubleCtrlDetector.Result.TRIGGERED) {
-                val suffix = if (result == DoubleCtrlDetector.Result.TRIGGERED && !acted) " (suppressed)" else ""
-                logger?.debug("[DoubleCtrl] $result$suffix")
+            val always = result == DoubleCtrlDetector.Result.TRIGGERED ||
+                result == DoubleCtrlDetector.Result.UNPAIRED_RELEASE
+            if (!keyTracing && !always) return
+
+            val detail = when (result) {
+                DoubleCtrlDetector.Result.TRIGGERED ->
+                    " gap=${doubleCtrl.lastGapMs}ms held=${doubleCtrl.heldKeyCount}" +
+                        if (acted) "" else " (suppressed)"
+                DoubleCtrlDetector.Result.UNPAIRED_RELEASE ->
+                    " (release with no press — ignored)"
+                else -> ""
             }
+            logger?.debug("[DoubleCtrl] $result$detail")
         }
 
         override fun nativeKeyPressed(e: NativeKeyEvent) {

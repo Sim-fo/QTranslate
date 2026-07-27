@@ -77,6 +77,17 @@ class DoubleCtrlDetector(
     private var lastTriggerTime = 0L
 
     /**
+     * Gap (ms) between the two taps of the most recent [Result.TRIGGERED].
+     * Diagnostic only: a human double tap varies run to run, while injected or
+     * machine-generated input repeats the same gap almost exactly.
+     */
+    var lastGapMs = 0L
+        private set
+
+    /** How many non-Ctrl keys are currently considered held. Diagnostic only. */
+    val heldKeyCount: Int get() = heldOtherKeys.size
+
+    /**
      * Updates the timing parameters without disturbing the state machine, so
      * settings changes take effect mid-session. [threshold] has no user setting
      * and is left untouched.
@@ -158,6 +169,7 @@ class DoubleCtrlDetector(
 
         // Second clean tap, close enough, with nothing else in between.
         if (lastTapTime != 0L && !windowContaminated && now - lastTapTime < threshold) {
+            lastGapMs = now - lastTapTime
             lastTriggerTime = now
             lastTapTime = 0L
             windowContaminated = false
