@@ -39,6 +39,8 @@ class DoubleCtrlDetector(
         COOLDOWN_ACTIVE,
         /** Ctrl was combined with another key — a shortcut, not a tap. */
         CONTAMINATED,
+        /** A Ctrl release arrived with no matching press — not a tap at all. */
+        UNPAIRED_RELEASE,
         /** Clean double tap detected — show the window. */
         TRIGGERED,
         /** First clean tap recorded — waiting for the second. */
@@ -54,6 +56,16 @@ class DoubleCtrlDetector(
 
     /** The in-progress Ctrl hold has been combined with another key. */
     private var pressContaminated = false
+
+    /**
+     * Whether the Ctrl release we are waiting for has a press behind it.
+     *
+     * A release with no press is not a keystroke the user made in front of us: the
+     * press was either swallowed by a foreground app that grabs raw input (game
+     * engines, full-screen apps) or belongs to synthetic input. Counting it as a
+     * tap is what let the window open with nobody touching Ctrl.
+     */
+    private var ctrlPressSeen = false
 
     /** Another key has been involved since the first tap of the current window. */
     private var windowContaminated = false
@@ -107,6 +119,7 @@ class DoubleCtrlDetector(
     fun onCtrlPressed(now: Long) {
         heldOtherKeys.entries.removeAll { now - it.value > STALE_HOLD_MS }
         pressContaminated = heldOtherKeys.isNotEmpty()
+        ctrlPressSeen = true
     }
 
     /**
@@ -115,7 +128,13 @@ class DoubleCtrlDetector(
      */
     fun onCtrlReleased(now: Long): Result {
         val contaminated = pressContaminated
+        val paired = ctrlPressSeen
         pressContaminated = false
+        ctrlPressSeen = false
+
+        // No press behind this release: ignore it outright, and leave any pending
+        // first tap alone so a stray release neither starts nor completes a double.
+        if (!paired) return Result.UNPAIRED_RELEASE
 
         // Cooldown: swallow everything, including a stray third tap after a trigger.
         if (now - lastTriggerTime < cooldown) {
@@ -155,6 +174,7 @@ class DoubleCtrlDetector(
     fun reset() {
         heldOtherKeys.clear()
         pressContaminated = false
+        ctrlPressSeen = false
         windowContaminated = false
         lastTapTime = 0L
         lastTriggerTime = 0L

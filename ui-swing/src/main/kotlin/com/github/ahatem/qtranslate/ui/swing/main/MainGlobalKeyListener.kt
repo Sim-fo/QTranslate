@@ -62,11 +62,17 @@ class MainGlobalKeyListener(
     private val sequenceListener = CustomSequenceListener()
     private val clipboardLock = AtomicBoolean(false)
     private val hotkeysEnabled = AtomicBoolean(true)
-    // Raised while [simulateCopy] is injecting Ctrl+C at OS level. The native hook
-    // cannot tell our own synthetic keys from the user's, so it must ignore events
-    // while this is up — otherwise the app feeds its own Ctrl presses back into the
-    // double-Ctrl detector and re-triggers itself.
-    private val syntheticInput = AtomicBoolean(false)
+    // Deadline until which hook events are treated as our own Robot-injected input.
+    //
+    // A plain boolean lowered right after the injection was not enough: JNativeHook
+    // delivers on its own dispatch thread, so a synthetic Ctrl **release** could
+    // land after the flag went down and be read as a real, press-less tap — two of
+    // those in a row opened the window with nobody touching the keyboard. A
+    // deadline keeps late arrivals covered without having to guess when the queue
+    // has drained.
+    @Volatile private var syntheticInputUntil = 0L
+
+    private fun isSyntheticInput(): Boolean = System.currentTimeMillis() <= syntheticInputUntil
     // AtomicBoolean.compareAndSet prevents double-initialization if initialize()
     // is called concurrently (e.g. from two rapid lifecycle events).
     private val initialized = AtomicBoolean(false)
@@ -397,7 +403,7 @@ class MainGlobalKeyListener(
 
         override fun nativeKeyPressed(e: NativeKeyEvent) {
             // Our own Robot-injected Ctrl+C — not a user keystroke.
-            if (syntheticInput.get()) return
+            if (isSyntheticInput()) return
             val now = System.currentTimeMillis()
 
             if (e.keyCode == NativeKeyEvent.VC_CONTROL) doubleCtrl.onCtrlPressed(now)
@@ -410,7 +416,7 @@ class MainGlobalKeyListener(
 
         override fun nativeKeyReleased(e: NativeKeyEvent) {
             // Our own Robot-injected Ctrl+C — not a user keystroke.
-            if (syntheticInput.get()) return
+            if (isSyntheticInput()) return
             val now = System.currentTimeMillis()
 
             traceEvent("released", e.keyCode, now)
@@ -478,7 +484,6 @@ class MainGlobalKeyListener(
             for (attempt in 1..COPY_ATTEMPTS) {
                 simulateCopy()
                 delay(CLIPBOARD_SETTLE_MS)
-                syntheticInput.set(false)
 
                 val after = readClipboardText(clipboard)
                 if (!after.isNullOrEmpty() && after != before) {
@@ -492,7 +497,9 @@ class MainGlobalKeyListener(
             return copied?.let { Capture.Text(it) }
                 ?: Capture.None.also { logger?.debug("captureSelection: no selection captured") }
         } finally {
-            syntheticInput.set(false)
+            // The guard is a deadline, so it lapses on its own once the injected
+            // events have had time to arrive — clearing it here would re-open the
+            // very race it exists to close.
             clipboardLock.set(false)
         }
     }
@@ -534,12 +541,12 @@ class MainGlobalKeyListener(
     }.getOrNull()
 
     /**
-     * Injects Ctrl+C at OS level. Raises [syntheticInput] first so the native hook
-     * discards the keys we are about to press; the caller lowers it once the
-     * clipboard has settled.
+     * Injects Ctrl+C at OS level, arming [syntheticInputUntil] around the injection
+     * so the native hook discards both the keys we press and any that reach its
+     * dispatch thread late.
      */
     private fun simulateCopy() {
-        syntheticInput.set(true)
+        syntheticInputUntil = System.currentTimeMillis() + SYNTHETIC_GUARD_MS
         runCatching {
             val robot = Robot()
             robot.autoDelay = 20
@@ -548,6 +555,9 @@ class MainGlobalKeyListener(
             robot.keyRelease(KeyEvent.VK_C)
             robot.keyRelease(KeyEvent.VK_CONTROL)
         }.onFailure { logger?.error("Copy simulation failed", it) }
+        // Re-arm from the end of the injection: the last release still has to travel
+        // through the hook's dispatch queue before it reaches us.
+        syntheticInputUntil = System.currentTimeMillis() + SYNTHETIC_GUARD_MS
     }
 
     private companion object {
@@ -566,6 +576,13 @@ class MainGlobalKeyListener(
 
         /** How long the key-trace window stays open after a Ctrl/Shift press. */
         const val TRACE_WINDOW_MS = 1000L
+
+        /**
+         * How long after injecting Ctrl+C the hook keeps discarding events. Covers
+         * the trip through JNativeHook's dispatch queue; short enough that real
+         * keystrokes right after a capture are not swallowed for long.
+         */
+        const val SYNTHETIC_GUARD_MS = 250L
 
         /** How many times to retry the copy before deciding nothing is selected. */
         const val COPY_ATTEMPTS = 2
