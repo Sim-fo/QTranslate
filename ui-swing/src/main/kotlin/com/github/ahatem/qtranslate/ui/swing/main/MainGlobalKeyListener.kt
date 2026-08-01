@@ -496,6 +496,15 @@ class MainGlobalKeyListener(
     private suspend fun captureSelection(): Capture {
         if (!clipboardLock.compareAndSet(false, true)) return Capture.Busy
         try {
+            // Let the user's physical modifier release reach the foreground app
+            // before injecting ours. The gesture ends ON a Ctrl release and we act
+            // within a millisecond, so without this the still-in-flight physical
+            // Ctrl-up cancels our synthetic Ctrl-down: the target then receives a
+            // bare "C", which types a character over the user's selection instead
+            // of copying it. In a non-Latin layout that character is whatever the
+            // C key produces there.
+            delay(MODIFIER_SETTLE_MS)
+
             val clipboard = Toolkit.getDefaultToolkit().systemClipboard
             val original  = runCatching { clipboard.getContents(null) }.getOrNull()
             val before    = readClipboardText(clipboard)
@@ -569,8 +578,11 @@ class MainGlobalKeyListener(
         syntheticInputUntil = System.currentTimeMillis() + SYNTHETIC_GUARD_MS
         runCatching {
             val robot = Robot()
-            robot.autoDelay = 20
+            robot.autoDelay = ROBOT_KEY_DELAY_MS
             robot.keyPress(KeyEvent.VK_CONTROL)
+            // Give the target app time to register Ctrl as down before C arrives;
+            // if it does not, C lands as a literal character on the selection.
+            robot.delay(ROBOT_MODIFIER_HOLD_MS)
             robot.keyPress(KeyEvent.VK_C)
             robot.keyRelease(KeyEvent.VK_C)
             robot.keyRelease(KeyEvent.VK_CONTROL)
@@ -606,6 +618,19 @@ class MainGlobalKeyListener(
 
         /** How many times to retry the copy before deciding nothing is selected. */
         const val COPY_ATTEMPTS = 2
+
+        /**
+         * Pause before injecting Ctrl+C, so the user's own modifier release has
+         * reached the foreground app first. Without it the injected Ctrl is
+         * cancelled mid-flight and the C types into their document.
+         */
+        const val MODIFIER_SETTLE_MS = 150L
+
+        /** Robot's pause between individual synthetic key events. */
+        const val ROBOT_KEY_DELAY_MS = 20
+
+        /** Extra hold after pressing Ctrl before C is sent. */
+        const val ROBOT_MODIFIER_HOLD_MS = 40
 
         /** Time given to the focused app to put the selection on the clipboard. */
         const val CLIPBOARD_SETTLE_MS = 50L
