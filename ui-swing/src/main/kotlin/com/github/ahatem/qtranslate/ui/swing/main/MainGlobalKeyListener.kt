@@ -508,6 +508,7 @@ class MainGlobalKeyListener(
             val clipboard = Toolkit.getDefaultToolkit().systemClipboard
             val original  = runCatching { clipboard.getContents(null) }.getOrNull()
             val before    = readClipboardText(clipboard)
+            logger?.debug("captureSelection: before=${describe(before)}")
 
             var copied: String? = null
             for (attempt in 1..COPY_ATTEMPTS) {
@@ -515,6 +516,7 @@ class MainGlobalKeyListener(
                 delay(CLIPBOARD_SETTLE_MS)
 
                 val after = readClipboardText(clipboard)
+                logger?.debug("captureSelection: attempt=$attempt after=${describe(after)}")
                 if (!after.isNullOrEmpty() && after != before) {
                     copied = after
                     break
@@ -567,7 +569,13 @@ class MainGlobalKeyListener(
         if (clipboard.isDataFlavorAvailable(DataFlavor.stringFlavor))
             clipboard.getData(DataFlavor.stringFlavor).toString().trim()
         else null
+    }.onFailure {
+        logger?.debug("captureSelection: clipboard read failed: $it")
     }.getOrNull()
+
+    /** Short log form of clipboard text: length plus a preview, `null` if unreadable. */
+    private fun describe(value: String?): String =
+        if (value == null) "null" else "len=${value.length} \"${value.take(40)}\""
 
     /**
      * Injects Ctrl+C at OS level, arming [syntheticInputUntil] around the injection
